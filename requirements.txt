@@ -1,0 +1,17 @@
+# Runtime dependencies for the hosted app.
+#
+# Minimum versions rather than pins: Streamlit Cloud resolves these at build
+# time, and pinning exactly tends to cause conflicts with the platform's own
+# environment. Pin harder if a deploy ever behaves differently from local.
+
+streamlit>=1.40
+pandas>=2.2
+psycopg[binary]>=3.2
+anthropic>=0.40
+
+# Receipt generation. Only needed if regenerating images on the server;
+# the images themselves are committed, so this could be removed.
+pillow>=10.0
+
+# Tracing. Optional — the app degrades quietly without Langfuse keys.
+langfuse>=2.0

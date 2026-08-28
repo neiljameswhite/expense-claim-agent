@@ -1,0 +1,26 @@
+# Secrets. Never commit.
+.env
+.streamlit/secrets.toml
+
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Generated receipts are rebuilt by scripts/make_receipts.py, but they are
+# committed deliberately: Streamlit Cloud will not have Pillow installed
+# unless it is in requirements, and the images are small.
+# (Remove the line below if you would rather generate them at deploy time.)
+# ui/assets/receipts/
+
+# Scratch
+*.log
+tmp/
