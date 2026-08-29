@@ -867,16 +867,33 @@ def tab_completed() -> None:
 
 def tab_about() -> None:
     st.markdown("""
-A learning experiment in building an agentic decision-making system in a form
-that could plausibly be deployed in an enterprise.
+A learning experiment in building an Enterprise style workflow with Human In The
+Loop interaction
 
 The objective was to build a working prototype and focus on testing and
-recording information on AI decisions relative to human review outcome.
+recording information on AI decisions relative to outcome of human reviews in order to:
 
-#### What it does
+1. Build learning on designing and running tests on an application which includes 
+AI reasoning
+2. Demonstrate ability to create a prototype of an application which includes an AI 
+reasoning layer
+3. First stage in a potential 'sandbox' for agentic AI development
 
-Performs an AI review of a pre-populated mock expense claim against an Expense
-Policy and presents a queue item to a human reviewer.
+#### What it is
+
+A mock expense policy for an enterprise has been created - see 'Policy' tab
+
+A set of 'Test Claims' have been written which are submitted through the web UI. These
+claims have been generated as specific test cases to exercise boundary conditions with
+known expected results
+
+A review of the claim is performed against the expense policy through LLM reasoning 
+(Claude API) 
+
+The submitted claim is populated in a queue for Human In The Loop Review ('Review Queue')
+
+Claims which have been reviewed are recorded on the 'Completed' tab which identifies 
+metrics on which claims have been accepted or overturned 
 
 #### How it works
 
