@@ -318,11 +318,6 @@ def queue_rows(order: str) -> list[dict]:
         ).fetchall()
 
 
-def mark_opened(run_id: str) -> None:
-    with connect() as conn:
-        conn.execute("UPDATE runs SET detail_opened = true WHERE run_id = %s", (run_id,))
-
-
 def record_decision(
     run_id: str, verdict: str, overturn_rationale: str, reviewer: str, response: str
 ) -> None:
@@ -368,7 +363,7 @@ def decided_rows() -> list[dict]:
         return conn.execute(
             """
             SELECT r.claim_id, r.ai_verdict, r.human_verdict, r.agreement,
-                   r.detail_opened, r.ai_confidence, r.reviewer_id,
+                   r.ai_confidence, r.reviewer_id,
                    r.human_reason_detail, r.final_reason_detail,
                    r.reason_overwritten, r.decided_at, r.run_label,
                    c.claim_amount, c.claim_category, c.submitter, c.record_id
@@ -729,10 +724,6 @@ def tab_review() -> None:
         )
 
         with st.expander(header):
-            if not st.session_state.get(f"opened_{run_id}"):
-                mark_opened(run_id)
-                st.session_state[f"opened_{run_id}"] = True
-
             if VERDICT_FIRST:
                 render_verdict(row)
                 st.divider()
@@ -799,9 +790,14 @@ def tab_completed() -> None:
 
     df = pd.DataFrame(rows)
 
+    # claim_id is the stable internal key (EXP-A1). The reference is the label
+    # people see, and it must match what the other two tabs show.
+    refs = reference_map()
+    df["reference"] = df["record_id"].map(refs).fillna(df["claim_id"])
+
     st.dataframe(
-        df[["claim_id", "submitter", "claim_category", "claim_amount",
-            "ai_verdict", "human_verdict", "agreement", "detail_opened",
+        df[["reference", "submitter", "claim_category", "claim_amount",
+            "ai_verdict", "human_verdict", "agreement",
             "reviewer_id", "decided_at"]],
         use_container_width=True,
         hide_index=True,
@@ -814,12 +810,15 @@ def tab_completed() -> None:
     agreed = int((df["agreement"] == "agreed").sum())
     overturned = int((df["agreement"] == "overturned").sum())
     rewritten = int(df["reason_overwritten"].fillna(False).sum())
+    rate = f"{overturned / total:.0%}" if total else "—"
 
     a, b, c, d = st.columns(4)
     a.metric("Decisions", total)
     b.metric("Agreed", agreed)
     c.metric("Overturned", overturned)
-    d.metric("Response rewritten", rewritten)
+    d.metric("Overturn rate", rate)
+    if rewritten:
+        st.caption(f"{rewritten} response(s) rewritten before sending.")
 
     if overturned:
         st.markdown("**Overturns**")
@@ -829,7 +828,7 @@ def tab_completed() -> None:
         )
         st.dataframe(
             df[df["agreement"] == "overturned"][
-                ["claim_id", "claim_category", "claim_amount",
+                ["reference", "claim_category", "claim_amount",
                  "ai_verdict", "human_verdict", "human_reason_detail", "reviewer_id"]
             ],
             use_container_width=True,
@@ -853,7 +852,7 @@ def tab_completed() -> None:
         )
         summary = (
             band.groupby("band", observed=False)
-            .agg(decisions=("claim_id", "count"),
+            .agg(decisions=("reference", "count"),
                  overturned=("agreement", lambda s: int((s == "overturned").sum())))
             .reset_index()
         )
@@ -867,33 +866,16 @@ def tab_completed() -> None:
 
 def tab_about() -> None:
     st.markdown("""
-A learning experiment in building an Enterprise style workflow with Human In The
-Loop interaction
+A learning experiment in building an agentic decision-making system in a form
+that could plausibly be deployed in an enterprise.
 
 The objective was to build a working prototype and focus on testing and
-recording information on AI decisions relative to outcome of human reviews in order to:
+recording information on AI decisions relative to human review outcome.
 
-1. Build learning on designing and running tests on an application which includes 
-AI reasoning
-2. Demonstrate ability to create a prototype of an application which includes an AI 
-reasoning layer
-3. First stage in a potential 'sandbox' for agentic AI development
+#### What it does
 
-#### What it is
-
-A mock expense policy for an enterprise has been created - see 'Policy' tab
-
-A set of 'Test Claims' have been written which are submitted through the web UI. These
-claims have been generated as specific test cases to exercise boundary conditions with
-known expected results
-
-A review of the claim is performed against the expense policy through LLM reasoning 
-(Claude API) 
-
-The submitted claim is populated in a queue for Human In The Loop Review ('Review Queue')
-
-Claims which have been reviewed are recorded on the 'Completed' tab which identifies 
-metrics on which claims have been accepted or overturned 
+Performs an AI review of a pre-populated mock expense claim against an Expense
+Policy and presents a queue item to a human reviewer.
 
 #### How it works
 

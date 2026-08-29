@@ -72,11 +72,19 @@ CREATE TABLE IF NOT EXISTS runs (
 
     -- Invariant 6: the AI's position precedes the human's
     CONSTRAINT ai_verdict_precedes_decision
-        CHECK (decided_at IS NULL OR ai_verdict_at IS NULL OR ai_verdict_at < decided_at),
+        CHECK (decided_at IS NULL OR ai_verdict_at IS NULL OR ai_verdict_at < decided_at)
 
-    -- Invariant 7: a decline requires the detail view to have been opened
-    CONSTRAINT decline_requires_detail
-        CHECK (human_verdict IS DISTINCT FROM 'decline' OR detail_opened = true)
+    -- detail_opened is retained above but no longer written. The decision
+    -- controls only ever existed inside the detail view, so the flag was
+    -- true for every run and the constraint that depended on it could not
+    -- fail. It measured a click rather than attention, and any control that
+    -- measures a click is satisfied by clicking. Universal examination is
+    -- now a property of the interface rather than something recorded.
+    --
+    -- The cost: the summary-versus-detail signal was the intended input to
+    -- promoting a confidence band to auto-clear. Overturn rate by band
+    -- remains, and is the substantive evidence; depth of inspection was a
+    -- refinement on it.
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (claim_status);
