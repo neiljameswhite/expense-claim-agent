@@ -75,6 +75,11 @@ st.markdown(
           background-color: #1F5FA8 !important;
           color: #FFFFFF !important;
       }
+      /* Streamlit prints "Press Cmd+Enter to submit form" inside every
+         multiline text area in a form. There is no option to disable it, the
+         shortcut does not reliably work, and the decision should be recorded
+         by pressing the button rather than by a hidden key combination. */
+      div[data-testid="InputInstructions"] { display: none !important; }
       button[kind="primary"]:disabled {
           background-color: #F2F4F6 !important;
           color: #9AA5B1 !important;
