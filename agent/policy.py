@@ -29,13 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.assessment import (
-    CHECK_AMOUNT_MATCHES,
-    CHECK_CATEGORY_CONSISTENT,
-    CHECK_COST_RATIONALE,
-    CHECK_IS_RECEIPT,
-    CHECK_LEGIBLE,
-    CHECK_OTHER_RATIONALE,
-    CHECK_VAT,
+    CHECK_CATEGORY_CORRECT,
+    CHECK_COST_EXPLANATION,
+    CHECK_MILEAGE_JOURNEY,
+    CHECK_OTHER_DESCRIPTION,
+    CHECK_SUBSISTENCE_ELIGIBLE,
     CHECK_WITHIN_LIMIT,
 )
 
@@ -48,14 +46,12 @@ from agent.assessment import (
 # --------------------------------------------------------------------------
 
 CHECK_SECTIONS: dict[int, list[str]] = {
-    CHECK_IS_RECEIPT: ["1"],            # what constitutes a valid receipt
-    CHECK_LEGIBLE: ["1", "6"],          # required fields; unassessable claims
-    CHECK_AMOUNT_MATCHES: ["1"],        # claimed amount must equal the total
-    CHECK_CATEGORY_CONSISTENT: ["2", "7"],  # categories and their detail
-    CHECK_VAT: ["5"],                   # VAT rules
-    CHECK_WITHIN_LIMIT: ["2", "7"],     # limits table and category detail
-    CHECK_COST_RATIONALE: ["4"],        # exceeding a limit
-    CHECK_OTHER_RATIONALE: ["3", "2"],  # the Other category, and 2.3
+    CHECK_CATEGORY_CORRECT: ["2", "9"],             # categories and their detail
+    CHECK_SUBSISTENCE_ELIGIBLE: ["5", "9"],         # eligibility and which limit
+    CHECK_MILEAGE_JOURNEY: ["6"],                   # required journey elements
+    CHECK_WITHIN_LIMIT: ["2", "5", "6", "9"],       # limits, subsistence, mileage
+    CHECK_COST_EXPLANATION: ["4"],                  # exceeding a limit
+    CHECK_OTHER_DESCRIPTION: ["3", "2"],            # the Other category, and 2.3
 }
 
 
@@ -166,7 +162,8 @@ class Policy:
         anchors = {
             "2.3": "Other must not be used to avoid a category limit",
             "4.2": "the grounds on which an excess is supported",
-            "5.2": "categories for which VAT must be recorded",
+            "5.2": "the two subsistence limits",
+            "6.4": "the elements a mileage journey description must state",
         }
         for ref, why in anchors.items():
             try:

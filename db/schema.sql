@@ -39,8 +39,15 @@ CREATE TABLE IF NOT EXISTS runs (
 
     check_results           jsonb,      -- [{check_id, result, inputs}]
 
-    ai_verdict              text CHECK (ai_verdict IN ('approve','decline')),
+    -- Three values. 'review' is the system reporting that it could not
+    -- reach a position on the evidence supplied, which is distinct from
+    -- 'decline'. The human verdict has only two: a person must decide.
+    ai_verdict              text CHECK (ai_verdict IN ('approve','decline','review')),
+    -- Two copies of the same findings. ai_reason_detail carries display
+    -- markers for the reviewer; ai_reason_plain is what the submitter
+    -- receives, where markup would appear literally.
     ai_reason_detail        text,
+    ai_reason_plain         text,
     ai_confidence           numeric(4,3),
     ai_verdict_at           timestamptz,
 
@@ -53,9 +60,13 @@ CREATE TABLE IF NOT EXISTS runs (
     final_reason_detail     text,
     reason_overwritten      boolean GENERATED ALWAYS AS
                             (final_reason_detail IS DISTINCT FROM ai_reason_detail) STORED,
+    -- 'deferred' where the system declined to take a position. Counting
+    -- that as an overturn would penalise exactly the restraint the design
+    -- is trying to encourage.
     agreement               text GENERATED ALWAYS AS
                             (CASE
                                 WHEN human_verdict IS NULL THEN NULL
+                                WHEN ai_verdict = 'review' THEN 'deferred'
                                 WHEN human_verdict = ai_verdict THEN 'agreed'
                                 ELSE 'overturned'
                              END) STORED,
@@ -95,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_label  ON runs (run_label);
 CREATE OR REPLACE FUNCTION enforce_overturn_reason() RETURNS trigger AS $$
 BEGIN
     IF NEW.human_verdict IS NOT NULL
+       AND NEW.ai_verdict IS DISTINCT FROM 'review'
        AND NEW.human_verdict IS DISTINCT FROM NEW.ai_verdict
        AND (NEW.human_reason_detail IS NULL OR btrim(NEW.human_reason_detail) = '') THEN
         RAISE EXCEPTION 'An overturned decision requires human_reason_detail';

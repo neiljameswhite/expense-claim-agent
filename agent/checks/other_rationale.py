@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent.assessment import CHECK_OTHER_RATIONALE, CheckResult, Result
+from agent.assessment import CHECK_OTHER_DESCRIPTION, CheckResult, Result
 from agent.llm import ModelOutputError, complete
 from agent.policy import Policy
 
@@ -110,7 +110,7 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
     """
     if claim.claim_category.strip().lower() != OTHER:
         return CheckResult(
-            check_id=CHECK_OTHER_RATIONALE,
+            check_id=CHECK_OTHER_DESCRIPTION,
             result=Result.NOT_APPLICABLE,
             inputs={"category": claim.claim_category},
             detail="A listed category was selected; no Other rationale required.",
@@ -119,7 +119,7 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
     rationale = (claim.other_category_rationale or "").strip()
     if not rationale:
         return CheckResult(
-            check_id=CHECK_OTHER_RATIONALE,
+            check_id=CHECK_OTHER_DESCRIPTION,
             result=Result.FAIL,
             inputs={"category": claim.claim_category, "rationale_supplied": False},
             clause_refs=["3.2"],
@@ -132,7 +132,7 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
             system=SYSTEM,
             user=USER.format(
                 policy_version=policy.version,
-                policy_context=policy.context_for(CHECK_OTHER_RATIONALE),
+                policy_context=policy.context_for(CHECK_OTHER_DESCRIPTION),
                 currency=claim.claim_currency,
                 amount=f"{claim.claim_amount:.2f}",
                 claim_date=claim.claim_date,
@@ -140,9 +140,9 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
                 rationale=rationale,
             ),
             max_tokens=600,
-            trace_name="check_8_other_rationale",
+            trace_name="check_6_other_description",
             trace_tags={
-                "check_id": CHECK_OTHER_RATIONALE,
+                "check_id": CHECK_OTHER_DESCRIPTION,
                 "claim_id": claim.claim_id,
                 "run_id": run_id,
                 "policy_version": policy.version,
@@ -150,7 +150,7 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
         )
     except ModelOutputError as exc:
         return CheckResult(
-            check_id=CHECK_OTHER_RATIONALE,
+            check_id=CHECK_OTHER_DESCRIPTION,
             result=Result.INCONCLUSIVE,
             inputs={"category": claim.claim_category, "rationale_supplied": True},
             detail=f"Model output could not be read: {exc}",
@@ -160,7 +160,7 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
     raw = str(parsed.get("result", "")).strip().lower()
     if raw not in VALID:
         return CheckResult(
-            check_id=CHECK_OTHER_RATIONALE,
+            check_id=CHECK_OTHER_DESCRIPTION,
             result=Result.INCONCLUSIVE,
             inputs={"category": claim.claim_category},
             detail=f"Model returned an unrecognised result: {raw!r}",
@@ -172,7 +172,7 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
         clause_refs = ["2.3", "3.4"]
 
     return CheckResult(
-        check_id=CHECK_OTHER_RATIONALE,
+        check_id=CHECK_OTHER_DESCRIPTION,
         result=Result(raw),
         inputs={
             "category": claim.claim_category,

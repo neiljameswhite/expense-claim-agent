@@ -19,13 +19,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.db import connect, setting  # noqa: E402
+from agent.db import connect, corpus_path, setting  # noqa: E402
 
-CORPUS = Path(__file__).resolve().parent.parent / "corpus" / "corpus_v1.json"
+CORPUS = corpus_path()
 
 INSERT = """
 INSERT INTO claims (
@@ -91,10 +92,13 @@ def seed(only: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
+    today = date.today()
+
     with connect() as conn:
         suffix = next_generation(conn, [r["record_id"] for r in records])
         for rec in records:
             claim = rec["claim"]
+            extraction = dict(rec["extraction"])
             conn.execute(
                 INSERT,
                 {
@@ -110,7 +114,7 @@ def seed(only: list[str] | None = None) -> int:
                     "cost_exception_rationale": claim.get("cost_exception_rationale"),
                     "other_category_rationale": claim.get("other_category_rationale"),
                     "receipt_ref": f"stub://{rec['record_id']}",
-                    "extraction": json.dumps(rec["extraction"]),
+                    "extraction": json.dumps(extraction),
                 },
             )
 
