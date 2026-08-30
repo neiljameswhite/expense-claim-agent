@@ -73,6 +73,21 @@ def dsn() -> str:
     return setting("PG_URL")
 
 
+def corpus_path() -> Path:
+    """The test corpus in use.
+
+    Hardcoding this in each script meant a version bump had to be chased
+    through five files, and it was missed three times. One setting, one
+    place, read the same way as everything else.
+    """
+    return _ROOT / setting("CORPUS_FILE", "corpus/corpus_v2.json")
+
+
+def policy_path() -> Path:
+    """The policy the system assesses against."""
+    return _ROOT / setting("POLICY_FILE", "corpus/expense_policy_v2_1.md")
+
+
 @contextmanager
 def connect():
     """A connection that commits on success and rolls back on error.

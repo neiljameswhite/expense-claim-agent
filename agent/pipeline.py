@@ -41,11 +41,11 @@ RETURNING *
 INSERT_RUN = """
 INSERT INTO runs (
     run_id, claim_id, claim_status, current_stage, check_results,
-    ai_verdict, ai_reason_detail, ai_confidence, ai_verdict_at,
+    ai_verdict, ai_reason_detail, ai_reason_plain, ai_confidence, ai_verdict_at,
     policy_version, model_version, autonomy_level, run_label
 ) VALUES (
     %(run_id)s, %(claim_id)s, 'awaiting_review', 'routed', %(check_results)s,
-    %(ai_verdict)s, %(ai_reason_detail)s, %(ai_confidence)s, now(),
+    %(ai_verdict)s, %(ai_reason_detail)s, %(ai_reason_plain)s, %(ai_confidence)s, now(),
     %(policy_version)s, %(model_version)s, %(autonomy_level)s, %(run_label)s
 )
 """
@@ -93,6 +93,7 @@ def _persist(conn, outcome: RunOutcome, claim_row: dict, policy_version: str) ->
             "check_results": json.dumps(outcome.as_json()),
             "ai_verdict": outcome.verdict,
             "ai_reason_detail": outcome.narrative(),
+            "ai_reason_plain": outcome.plain_narrative(),
             "ai_confidence": outcome.confidence(),
             "policy_version": policy_version,
             "model_version": setting("MODEL_VERSION", "claude-sonnet-5"),

@@ -17,17 +17,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from agent.db import corpus_path, policy_path  # noqa: E402
 from agent.pipeline import process_pending  # noqa: E402
 from agent.policy import load  # noqa: E402
 from agent.runner import format_outcome, run_claim  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-CORPUS = ROOT / "corpus" / "corpus_v1.json"
-POLICY = ROOT / "corpus" / "expense_policy_v1.md"
+CORPUS = corpus_path()
+POLICY = policy_path()
 
 GREEN, RED, DIM, BOLD, RESET = "\033[32m", "\033[31m", "\033[2m", "\033[1m", "\033[0m"
 
@@ -38,15 +40,25 @@ def expectations() -> dict[str, dict]:
 
 
 def claims_from_corpus(only: list[str] | None) -> list[dict]:
+    """Build claim rows straight from the corpus, as seeding would.
+
+    Submission date and any relative receipt dates are resolved here too:
+    without them the fourteen day rule has nothing to measure against, and
+    a dry run would report inconclusive for a case that is fine.
+    """
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    today = date.today()
     rows = []
     for rec in corpus["records"]:
         if only and rec["record_id"] not in only:
             continue
         row = dict(rec["claim"])
-        row["claim_id"] = f"EXP-{rec['record_id']}"
+        row["claim_id"] = rec["record_id"]
         row["record_id"] = rec["record_id"]
-        row["extraction"] = rec["extraction"]
+        row["submitted_at"] = today.isoformat()
+
+        row["extraction"] = dict(rec["extraction"])
+
         rows.append(row)
     return rows
 

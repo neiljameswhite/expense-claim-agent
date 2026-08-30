@@ -25,14 +25,14 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.assessment import CHECK_NAMES  # noqa: E402,F401
-from agent.db import connect, setting  # noqa: E402
+from agent.db import connect, corpus_path, policy_path, setting  # noqa: E402
 from agent.pipeline import pending_count as unprocessed_count  # noqa: E402
 from agent.pipeline import process_pending  # noqa: E402
 from agent.policy import load as load_policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-CORPUS = ROOT / "corpus" / "corpus_v1.json"
-POLICY_FILE = ROOT / "corpus" / "expense_policy_v1.md"
+CORPUS = corpus_path()
+POLICY_FILE = policy_path()
 RECEIPTS = Path(__file__).resolve().parent / "assets" / "receipts"
 FALLBACK_RECEIPT = Path(__file__).resolve().parent / "assets" / "demo_receipt.png"
 
@@ -40,10 +40,6 @@ FALLBACK_RECEIPT = Path(__file__).resolve().parent / "assets" / "demo_receipt.pn
 # is faster but means agreement partly measures compliance rather than
 # independent judgement. Flip this to compare overturn rates either way.
 VERDICT_FIRST = setting("SHOW_VERDICT_FIRST", "true").lower() == "true"
-
-# Checks 1-3 are deterministic; their detail is code-generated, not model
-# output. Marked in the rationale column so the origin is never implied.
-DETERMINISTIC_CHECKS = {1, 2, 3}
 
 RESULT_ICON = {
     "pass": "✅",
@@ -105,63 +101,83 @@ def policy_text() -> str:
     return POLICY_FILE.read_text(encoding="utf-8")
 
 
-@st.cache_data
-def readable_policy() -> str:
-    """The policy with markdown syntax stripped, for plain-text display.
+@st.cache_resource
+def policy_object():
+    """The parsed policy.
 
-    Removes heading hashes, bold markers and the table separator rows, so
-    the document reads as a document rather than as source. Nothing is
-    reworded — this is the same text the checks are assessed against.
+    Cached for the life of the process: parsing runs validate(), which
+    checks the document still contains what the check mapping expects. That
+    should fail once at startup rather than partway through a batch.
     """
-    out: list[str] = []
+    return load_policy(POLICY_FILE)
+
+
+@st.cache_data
+def policy_blocks() -> list[tuple[str, object]]:
+    """The policy split into text and table blocks.
+
+    Rendered separately because they need different widgets. Padding table
+    cells to fixed character widths only aligns in a monospace font, and the
+    theme font is proportional — which is why the limits table, the part of
+    the policy most often checked, came out staggered.
+    """
+    blocks: list[tuple[str, object]] = []
+    text: list[str] = []
+    table: list[list[str]] = []
+
+    def flush_text() -> None:
+        if text:
+            body = "\n".join(text).strip("\n")
+            if body.strip():
+                blocks.append(("text", body))
+            text.clear()
+
+    def flush_table() -> None:
+        if table:
+            header, *rows = table
+            blocks.append(("table", pd.DataFrame(rows, columns=header)))
+            table.clear()
+
     for raw in policy_text().splitlines():
         line = raw.rstrip()
 
-        # table separator rows: |---|---|
-        if line.startswith("|") and set(line) <= set("|-: "):
-            continue
-
-        # headings
-        if line.startswith("#"):
-            line = line.lstrip("#").strip()
-            if line:
-                out.append("")
-                out.append(line.upper())
-                out.append("-" * len(line))
-            continue
-
-        # horizontal rules
-        if line.strip() in {"---", "***", "___"}:
-            out.append("")
-            continue
-
-        line = line.replace("**", "").replace("*", "")
-
-        # table rows: render as aligned columns
         if line.startswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            line = "  " + "".join(c.ljust(24) for c in cells).rstrip()
+            # separator rows carry no data
+            if set(line) <= set("|-: "):
+                continue
+            flush_text()
+            table.append([c.strip() for c in line.strip("|").split("|")])
+            continue
 
-        out.append(line)
+        flush_table()
 
-    text = "\n".join(out)
-    while "\n\n\n" in text:
-        text = text.replace("\n\n\n", "\n\n")
-    return text.strip()
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip()
+            if heading:
+                text.append("")
+                text.append(heading.upper())
+                text.append("-" * len(heading))
+            continue
 
+        if line.strip() in {"---", "***", "___"}:
+            text.append("")
+            continue
 
-@st.cache_resource
-def policy_object():
-    return load_policy(POLICY_FILE)
+        text.append(line.replace("**", "").replace("*", ""))
+
+    flush_table()
+    flush_text()
+    return blocks
 
 
 @st.cache_data
 def reference_map() -> dict[str, str]:
     """Record id to the reference shown in the interface.
 
-    The corpus keeps its own ids (A1, F2, H1) because the CLI, the eval suite
-    and every expected_checks block key off them. EXP-n is a display label
-    only, so renumbering here changes nothing downstream.
+    Since the corpus moved to sequential ids these are the same string, so
+    the map is effectively an identity. It is kept because claims seeded
+    under the old lettered ids are still in the database, and a stale row
+    should fall back to its own id rather than disappear from the queue.
     """
     return {r["record_id"]: r.get("reference", r["record_id"]) for r in load_corpus()}
 
@@ -204,9 +220,8 @@ def run_processing(only: list[str] | None = None) -> list:
     workflow later changes the trigger and nothing else.
 
     The console exists because the architecture is otherwise invisible: it
-    shows three checks resolving instantly as deterministic code, four
-    pausing while they call the model with a named slice of policy, and the
-    verdict computed at the end with no model call at all.
+    shows each check calling the model with a named slice of policy, and the
+    verdict computed at the end in code with no model call at all.
     """
     policy = policy_object()
     lines: list[str] = []
@@ -304,11 +319,11 @@ def queue_rows(order: str) -> list[dict]:
         return conn.execute(
             f"""
             SELECT r.run_id, r.claim_id, r.ai_verdict, r.ai_reason_detail,
-                   r.ai_confidence, r.check_results, r.created_at,
+                   r.ai_reason_plain, r.ai_confidence, r.check_results, r.created_at,
                    r.policy_version, r.model_version, r.run_label,
                    c.submitter, c.claim_amount, c.claim_currency,
                    c.claim_category, c.claim_date, c.business_purpose,
-                   c.tax_amount, c.cost_exception_rationale,
+                   c.cost_exception_rationale,
                    c.other_category_rationale, c.extraction, c.record_id, c.submitted_at
               FROM runs r
               JOIN claims c ON c.claim_id = r.claim_id
@@ -423,8 +438,12 @@ def render_verdict(row) -> None:
     st.markdown("**AI Review**")
     if verdict == "approve":
         st.success(f"**Approve**{conf_text}")
-    else:
+    elif verdict == "decline":
         st.error(f"**Decline**{conf_text}")
+    else:
+        # The system reporting that it could not reach a position, which is
+        # not the same as reaching a negative one.
+        st.warning(f"**Review** — could not be determined{conf_text}")
     if row["ai_reason_detail"]:
         st.markdown(row["ai_reason_detail"])
 
@@ -461,67 +480,26 @@ def render_cited_clauses(check_results) -> None:
                 f"Clause {ref} was cited but does not appear in policy v{policy.version}."
             )
             continue
-        st.markdown(f"**{clause.ref}**  {clause.text}")
+        # Plain text, not markdown. This is a quotation from a document, and
+        # rendering it as markdown lets the policy's own punctuation change
+        # how it looks — clause 2.3 opens with a quote mark, which markdown
+        # reads as formatting and renders as a heading.
+        st.text(f"{clause.ref}  {clause.text}")
 
 
-def render_evidence(row) -> None:
-    extraction = as_dict(row["extraction"])
-    left, right = st.columns(2)
+def render_findings(row) -> None:
+    """What the system found, and the policy it applied.
 
-    with left:
-        st.markdown("**Claim as submitted**")
-        st.write(
-            pd.DataFrame(
-                [
-                    ("Submitter", row["submitter"]),
-                    ("Amount", f"{row['claim_currency']} {row['claim_amount']}"),
-                    ("Category", row["claim_category"]),
-                    ("Date incurred", str(row["claim_date"])),
-                    ("Business purpose", row["business_purpose"]),
-                    ("Tax declared", row["tax_amount"] if row["tax_amount"] is not None else "—"),
-                ],
-                columns=["Field", "Value"],
-            ).set_index("Field")
-        )
-
-        for label, key in (
-            ("Cost Exception — User Submitted Rationale", "cost_exception_rationale"),
-            ("Other Category — User Submitted Rationale", "other_category_rationale"),
-        ):
-            if row[key]:
-                st.markdown(f"**{label}**")
-                st.info(row[key])
-
-    with right:
-        st.markdown("**Receipt**")
-        image = receipt_for(row.get("record_id"))
-        if image is not None:
-            st.image(str(image), width=320)
-        else:
-            st.caption("No receipt image. Run scripts/make_receipts.py.")
-
-        st.markdown("**Read from receipt — extracted**")
-        conf = extraction.get("confidence") or {}
-        rows = []
-        for field in ("retailer", "date", "total", "vat_number", "vat_amount"):
-            value = extraction.get(field)
-            c = conf.get(field)
-            suffix = f"  ({c})" if c is not None else ""
-            rows.append((field, f"{value if value is not None else '—'}{suffix}"))
-        st.write(pd.DataFrame(rows, columns=["Field", "Value"]).set_index("Field"))
-
-        items = extraction.get("line_items") or []
-        if items:
-            st.write(pd.DataFrame(items))
-
+    Placed above the claim because that is the order a reviewer works in:
+    most claims are routine, so the finding comes first and the evidence is
+    consulted only where something needs checking.
+    """
     results = as_list(row["check_results"])
 
     st.markdown("**Checks**")
     table = []
     for c in sorted(results, key=lambda x: x["check_id"]):
         rationale = c.get("detail", "")
-        if c["check_id"] in DETERMINISTIC_CHECKS and rationale:
-            rationale = f"[deterministic] {rationale}"
         table.append(
             {
                 "": RESULT_ICON.get(c["result"], "?"),
@@ -533,11 +511,34 @@ def render_evidence(row) -> None:
         )
     st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
     st.caption(
-        "Checks 1–3 are deterministic and marked accordingly. "
         f"Assessed against policy v{row['policy_version']} · {row['model_version']}"
     )
 
-    render_cited_clauses(results)
+
+def render_claim(row) -> None:
+    """The claim as the submitter filled it in.
+
+    The same renderer the Test Claims page uses. A reviewer and a submitter
+    should be looking at the same thing: rendering the claim as a table here
+    and as a form there would mean two representations of one record, and
+    the reviewer's job is partly to check the form against the receipt.
+    """
+    claim = {
+        "submitter": row["submitter"],
+        "claim_amount": float(row["claim_amount"]),
+        "claim_currency": row["claim_currency"],
+        "claim_category": row["claim_category"],
+        "claim_date": row["claim_date"],
+        "business_purpose": row["business_purpose"],
+        "cost_exception_rationale": row["cost_exception_rationale"],
+        "other_category_rationale": row["other_category_rationale"],
+    }
+    render_submission_form(claim, row.get("record_id"), key_prefix=f"rev_{row['run_id']}")
+
+
+
+
+
 
 
 # --------------------------------------------------------------------------
@@ -545,7 +546,7 @@ def render_evidence(row) -> None:
 # --------------------------------------------------------------------------
 
 
-def render_submission_form(claim: dict, record_id: str) -> None:
+def render_submission_form(claim: dict, record_id: str | None, *, key_prefix: str = "sub") -> None:
     """The claim as the submitter filled it in.
 
     Rendered as a form rather than a table because this is the only place the
@@ -558,46 +559,41 @@ def render_submission_form(claim: dict, record_id: str) -> None:
     left, right = st.columns(2)
     with left:
         st.text_input("Submitter", value=claim["submitter"], disabled=True,
-                      key=f"f_sub_{id(claim)}")
+                      key=f"{key_prefix}_sub_{record_id}")
         st.text_input("Amount", value=f"{claim['claim_currency']} {claim['claim_amount']:.2f}",
-                      disabled=True, key=f"f_amt_{id(claim)}")
+                      disabled=True, key=f"{key_prefix}_amt_{record_id}")
         st.text_input("Date incurred", value=str(claim["claim_date"]), disabled=True,
-                      key=f"f_date_{id(claim)}")
+                      key=f"{key_prefix}_date_{record_id}")
     with right:
         st.text_input("Category", value=claim["claim_category"], disabled=True,
-                      key=f"f_cat_{id(claim)}")
-        tax = claim.get("tax_amount")
-        st.text_input(
-            "Tax amount",
-            value=f"{tax:.2f}" if tax is not None else "",
-            disabled=True,
-            key=f"f_tax_{id(claim)}",
-        )
+                      key=f"{key_prefix}_cat_{record_id}")
         st.text_input("Attachment", value="receipt.png", disabled=True,
-                      key=f"f_att_{id(claim)}")
+                      key=f"{key_prefix}_att_{record_id}")
 
     st.text_area("Business purpose", value=claim["business_purpose"], disabled=True,
-                 height=70, key=f"f_purp_{id(claim)}")
+                 height=70, key=f"{key_prefix}_purp_{record_id}")
 
     st.text_area(
         "Please give a rationale if cost exceeds policy",
         value=claim.get("cost_exception_rationale") or "",
         disabled=True,
         height=90,
-        key=f"f_cost_{id(claim)}",
+        key=f"{key_prefix}_cost_{record_id}",
     )
     st.text_area(
         "If Other selected for reason, please enter reason",
         value=claim.get("other_category_rationale") or "",
         disabled=True,
         height=90,
-        key=f"f_other_{id(claim)}",
+        key=f"{key_prefix}_other_{record_id}",
     )
 
     image = receipt_for(record_id)
+    st.markdown("**Attached receipt**")
     if image is not None:
-        st.markdown("**Attached receipt**")
-        st.image(str(image), width=300)
+        st.image(str(image), width=320)
+    else:
+        st.caption(f"No image for {record_id}. Run scripts/make_receipts.py.")
 
 
 def tab_submit() -> None:
@@ -617,67 +613,79 @@ def tab_submit() -> None:
     def pick_key(record_id: str) -> str:
         return f"pick_{nonce}_{record_id}"
 
-    head, tail = st.columns([1, 5])
-    with head:
-        if st.button("Select all"):
-            for r in records:
-                st.session_state[pick_key(r["record_id"])] = True
-            st.rerun()
-    with tail:
-        if st.button("Clear selection"):
+    # Clear sits outside the form because it must act immediately. There is
+    # deliberately no Select all: it is the obvious button to press, it would
+    # run the whole corpus, and a visitor would fire two dozen model calls
+    # before reading anything.
+    if st.button("Clear Selection"):
+        st.session_state["pick_nonce"] = nonce + 1
+        st.rerun()
+
+    st.divider()
+
+    # A form batches the checkboxes so nothing re-runs until Submit is
+    # pressed. Without it every tick re-runs the script, which resets the
+    # tabs and throws you back to About.
+    #
+    # The cost is that the button cannot show a running count of what is
+    # selected, because nothing updates until submission.
+    with st.form(key=f"submit_{nonce}"):
+        for rec in records:
+            claim = rec["claim"]
+            rid = rec["record_id"]
+
+            label = rec.get("label") or rec["purpose"].rstrip(".")
+            reference = rec.get("reference", rid)
+            state = "  ·  awaiting assessment" if rid in awaiting else ""
+
+            pick, body = st.columns([1, 14])
+            with pick:
+                st.checkbox("", key=pick_key(rid), label_visibility="collapsed")
+            with body:
+                header = (
+                    f"{reference}  ·  {label}  ·  £{claim['claim_amount']:.2f}"
+                    f"  ·  Expected Result: {rec['expected_verdict'].upper()}{state}"
+                )
+                with st.expander(header):
+                    render_submission_form(claim, rid)
+
+        st.divider()
+        submitted = st.form_submit_button("Submit", type="primary")
+
+    if submitted:
+        chosen = [
+            r["record_id"] for r in records
+            if st.session_state.get(pick_key(r["record_id"]))
+        ]
+        if not chosen:
+            st.error("Select at least one claim.")
+        else:
+            # A record already awaiting assessment is not submitted again.
+            # Doing so would leave two claims for one test case, and
+            # processing would take both.
+            already = pending_record_ids()
+            fresh = [r for r in records
+                     if r["record_id"] in chosen and r["record_id"] not in already]
+            waiting = [r for r in records
+                       if r["record_id"] in chosen and r["record_id"] in already]
+
+            if waiting:
+                st.info(
+                    f"{len(waiting)} already awaiting assessment "
+                    f"({', '.join(r['record_id'] for r in waiting)}) — assessing "
+                    "rather than submitting again."
+                )
+            if fresh:
+                n = submit_claims(fresh)
+                st.caption(f"{n} claim(s) written. Assessing…")
+
+            results = run_processing(only=chosen)
+            report_processing(results)
             st.session_state["pick_nonce"] = nonce + 1
             st.rerun()
 
     st.divider()
 
-    for rec in records:
-        claim = rec["claim"]
-        rid = rec["record_id"]
-        # This tab selects test cases, not claims: the header says what each
-        # one tests rather than describing someone's dinner.
-        label = rec.get("label") or rec["purpose"].rstrip(".")
-        reference = rec.get("reference", rid)
-        state = "  ·  awaiting assessment" if rid in awaiting else ""
-
-        pick, body = st.columns([1, 14])
-        with pick:
-            st.checkbox("", key=pick_key(rid), label_visibility="collapsed")
-        with body:
-            header = (
-                f"{reference}  ·  {label}  ·  £{claim['claim_amount']:.2f}  ·  "
-                f"Expected Result: {rec['expected_verdict'].upper()}{state}"
-            )
-            with st.expander(header):
-                st.caption(rec["purpose"])
-                render_submission_form(claim, rid)
-
-    chosen = [r["record_id"] for r in records if st.session_state.get(pick_key(r["record_id"]))]
-
-    st.divider()
-    if st.button(f"Submit and assess ({len(chosen)})", disabled=not chosen, type="primary"):
-        # A record already awaiting assessment is not submitted again. Doing
-        # so would leave two claims for one test case, and processing would
-        # take both.
-        already = pending_record_ids()
-        fresh = [r for r in records if r["record_id"] in chosen and r["record_id"] not in already]
-        waiting = [r for r in records if r["record_id"] in chosen and r["record_id"] in already]
-
-        if waiting:
-            st.info(
-                f"{len(waiting)} already awaiting assessment "
-                f"({', '.join(r['record_id'] for r in waiting)}) — assessing rather "
-                "than submitting again."
-            )
-        if fresh:
-            n = submit_claims(fresh)
-            st.caption(f"{n} claim(s) written. Assessing…")
-
-        results = run_processing(only=[r["record_id"] for r in records if r["record_id"] in chosen])
-        report_processing(results)
-        # Bumping the nonce clears the selection on the next run. The nonce is
-        # not itself a widget key, so assigning to it here is permitted even
-        # though the checkboxes already exist.
-        st.session_state["pick_nonce"] = nonce + 1
 
 
 def tab_review() -> None:
@@ -713,7 +721,7 @@ def tab_review() -> None:
     for row in rows:
         run_id = str(row["run_id"])
         verdict = row["ai_verdict"]
-        icon = "🟢" if verdict == "approve" else "🔴"
+        icon = {"approve": "🟢", "decline": "🔴"}.get(verdict, "🟡")
         reference = refs.get(row.get("record_id"), row["claim_id"])
         submitted = row.get("submitted_at")
         when = f"  ·  {submitted:%d %b %H:%M}" if submitted else ""
@@ -724,60 +732,92 @@ def tab_review() -> None:
         )
 
         with st.expander(header):
+            # Findings sit next to the claim so the two can be compared, with
+            # the verbatim policy last: it is long, and it is consulted to
+            # verify a citation rather than read on the way past.
             if VERDICT_FIRST:
                 render_verdict(row)
                 st.divider()
-                render_evidence(row)
+                render_findings(row)
+                st.divider()
+                render_claim(row)
             else:
-                render_evidence(row)
+                # The alternative ordering exists to measure whether leading
+                # with a conclusion changes overturn rates.
+                render_claim(row)
+                st.divider()
+                render_findings(row)
                 st.divider()
                 render_verdict(row)
 
             st.divider()
+            render_cited_clauses(as_list(row["check_results"]))
 
-            reviewer = st.text_input(
-                "Reviewer", value=st.session_state.get("reviewer", ""), key=f"who_{run_id}"
-            )
-            st.session_state["reviewer"] = reviewer
+            st.divider()
 
-            # Displayed capitalised; stored lowercase to satisfy the enum.
-            label = st.radio(
-                "Decision",
-                ["Approve", "Decline"],
-                index=None,
-                horizontal=True,
-                key=f"choice_{run_id}",
-            )
-            choice = label.lower() if label else None
-
-            overturning = choice is not None and choice != verdict
-            rationale = ""
-            if overturning:
-                st.warning(
-                    f"The system assessed this as **{verdict.capitalize()}**. "
-                    f"You have chosen **{choice.capitalize()}**."
+            # A form batches the inputs so nothing re-runs until the button
+            # is pressed. Without it every radio click re-runs the script,
+            # which resets the tabs and closes the claim mid-decision.
+            #
+            # The cost is that nothing can react as you type: the overturn
+            # warning that used to appear on choosing a different verdict is
+            # gone, and a missing rationale is caught on submit instead.
+            with st.form(key=f"decide_{run_id}"):
+                # Both are required. A form cannot flag them as you type, so
+                # the label says so and the button reports what is missing.
+                reviewer = st.text_input(
+                    "Reviewer *",
+                    value=st.session_state.get("reviewer", ""),
+                    placeholder="Required",
                 )
+
+                label = st.radio(
+                    "Decision *",
+                    ["Approve", "Decline"],
+                    index=None,
+                    horizontal=True,
+                )
+
                 rationale = st.text_area(
-                    "Overturn Rationale", key=f"rationale_{run_id}", height=80
+                    "Overturn Rationale",
+                    height=80,
+                    help="Required where your decision differs from the system's.",
                 )
 
-            response = st.text_area(
-                "AI Generated Response",
-                value=row["ai_reason_detail"] or "",
-                key=f"response_{run_id}",
-                height=100,
-                help="What the submitter receives. Edit before recording if needed.",
-            )
+                response = st.text_area(
+                    "AI Generated Response",
+                    value=row["ai_reason_plain"] or row["ai_reason_detail"] or "",
+                    height=100,
+                    help="What the submitter receives. Edit before recording if needed.",
+                )
 
-            blocked = (
-                choice is None
-                or not reviewer.strip()
-                or (overturning and not rationale.strip())
-            )
-            if st.button("Record Decision", key=f"go_{run_id}", disabled=blocked, type="primary"):
-                record_decision(run_id, choice, rationale.strip(), reviewer.strip(), response)
-                st.success(f"{row['claim_id']} recorded as {choice}.")
-                st.rerun()
+                st.caption("\\* required")
+                submitted = st.form_submit_button("Record Decision", type="primary")
+
+            if submitted:
+                choice = label.lower() if label else None
+                # Deferring is not a position, so a human decision after a
+                # review verdict is not an overturn and needs no justification.
+                deferred = verdict == "review"
+                overturning = choice is not None and not deferred and choice != verdict
+
+                if choice is None:
+                    st.error("Choose Approve or Decline.")
+                elif not reviewer.strip():
+                    st.error("Enter a reviewer name.")
+                elif overturning and not rationale.strip():
+                    st.error(
+                        f"The system assessed this as {verdict.capitalize()} and you "
+                        f"have chosen {choice.capitalize()}. An overturn rationale "
+                        "is required."
+                    )
+                else:
+                    st.session_state["reviewer"] = reviewer.strip()
+                    record_decision(
+                        run_id, choice, rationale.strip(), reviewer.strip(), response
+                    )
+                    st.success(f"{row['claim_id']} recorded as {choice}.")
+                    st.rerun()
 
 
 def tab_completed() -> None:
@@ -809,14 +849,20 @@ def tab_completed() -> None:
     total = len(df)
     agreed = int((df["agreement"] == "agreed").sum())
     overturned = int((df["agreement"] == "overturned").sum())
+    deferred = int((df["agreement"] == "deferred").sum())
     rewritten = int(df["reason_overwritten"].fillna(False).sum())
-    rate = f"{overturned / total:.0%}" if total else "—"
 
-    a, b, c, d = st.columns(4)
+    # Deferrals are excluded from the rate: the system took no position, so
+    # there was nothing to overturn. Counting them would penalise restraint.
+    decided = total - deferred
+    rate = f"{overturned / decided:.0%}" if decided else "—"
+
+    a, b, c, d, e = st.columns(5)
     a.metric("Decisions", total)
     b.metric("Agreed", agreed)
     c.metric("Overturned", overturned)
-    d.metric("Overturn rate", rate)
+    d.metric("Deferred", deferred)
+    e.metric("Overturn rate", rate)
     if rewritten:
         st.caption(f"{rewritten} response(s) rewritten before sending.")
 
@@ -877,6 +923,20 @@ recording information on AI decisions relative to human review outcome.
 Performs an AI review of a pre-populated mock expense claim against an Expense
 Policy and presents a queue item to a human reviewer.
 
+Six checks run against each claim. No limits, categories or conditions are
+hardcoded: every threshold is read from the policy document at assessment
+time, so amending the policy changes the system's behaviour without any change
+to the code. Judgement is performed by the model; the verdict is computed in
+code from its findings, so the same findings always produce the same outcome.
+
+#### What it does not do
+
+The receipt is shown to the reviewer but is not read by the system. Claim data
+is supplied rather than extracted, so there are no checks comparing a claimed
+amount against one taken from the image. Reading the receipt — and marking on
+it where each value was found — is the obvious next layer, and the extraction
+step exists in the code as the seam it would sit behind.
+
 #### How it works
 
 1. Select a claim on the Test Claims tab and submit it
@@ -905,15 +965,26 @@ def tab_policy() -> None:
         f"Version {policy.version} · the document the system assessed against. "
         "Use it to verify any clause cited on a claim."
     )
-    # Plain text rather than rendered markdown. The tab exists so a reviewer
-    # can check what a cited clause actually says, and uniform type is easier
-    # to scan for a clause number than a document with five heading sizes
-    # competing for attention. It also keeps the limits table aligned, which
-    # markdown rendering does not.
-    st.text(readable_policy())
+    # Prose as plain text, tables as tables. Uniform type is easier to scan
+    # for a clause number than a document with five heading sizes competing
+    # for attention, but a table needs to be a table to be legible.
+    for kind, block in policy_blocks():
+        if kind == "table":
+            st.table(block)
+        else:
+            st.text(block)
 
 
 # --------------------------------------------------------------------------
+
+
+PAGES = {
+    "About": "tab_about",
+    "Test Claims": "tab_submit",
+    "Review Queue": "tab_review",
+    "Completed": "tab_completed",
+    "Policy": "tab_policy",
+}
 
 
 def main() -> None:
@@ -925,25 +996,38 @@ def main() -> None:
         st.error(f"Cannot reach the database: {exc}")
         st.stop()
 
-    # Submit counts corpus records; Review and Completed count runs. A record
-    # can be run more than once, so the figures are not meant to sum.
-    cases = len(load_corpus())
-    decided = completed_count()
+    # Test Claims counts corpus records; Review and Completed count runs. A
+    # record can be run more than once, so the figures are not meant to sum.
+    counts = {
+        "Test Claims": len(load_corpus()),
+        "Review Queue": waiting,
+        "Completed": completed_count(),
+    }
 
-    about, submit, review, completed, policy = st.tabs(
-        ["About", f"Test Claims ({cases})", f"Review Queue ({waiting})",
-         f"Completed ({decided})", "Policy"]
-    )
-    with about:
-        tab_about()
-    with submit:
-        tab_submit()
-    with review:
-        tab_review()
-    with completed:
-        tab_completed()
-    with policy:
-        tab_policy()
+    # Sidebar navigation rather than tabs. Streamlit preserves sidebar state
+    # across re-runs; st.tabs does not, and gives no way to set which tab is
+    # active.
+    #
+    # The option values are the bare page names, with the counts added only
+    # for display. Putting a count in the option itself makes the list change
+    # whenever a claim is submitted or decided, and Streamlit cannot then
+    # match the stored selection to the new options — so it falls back to the
+    # first entry and throws you back to About.
+    def label(name: str) -> str:
+        n = counts.get(name)
+        return f"{name} ({n})" if n is not None else name
+
+    with st.sidebar:
+        st.markdown("### Navigation")
+        choice = st.radio(
+            "Page",
+            list(PAGES),
+            format_func=label,
+            label_visibility="collapsed",
+            key="page",
+        )
+
+    globals()[PAGES[choice]]()
 
 
 main()

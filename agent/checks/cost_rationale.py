@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent.assessment import CHECK_COST_RATIONALE, CheckResult, Result
+from agent.assessment import CHECK_COST_EXPLANATION, CheckResult, Result
 from agent.llm import ModelOutputError, complete
 from agent.policy import Policy
 
@@ -127,7 +127,7 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
     # to justify. A rationale supplied anyway is ignored.
     if not over_limit:
         return CheckResult(
-            check_id=CHECK_COST_RATIONALE,
+            check_id=CHECK_COST_EXPLANATION,
             result=Result.NOT_APPLICABLE,
             inputs={"over_limit": False},
             detail="Claim is within its category limit; no exception required.",
@@ -138,7 +138,7 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
     rationale = (claim.cost_exception_rationale or "").strip()
     if not rationale:
         return CheckResult(
-            check_id=CHECK_COST_RATIONALE,
+            check_id=CHECK_COST_EXPLANATION,
             result=Result.FAIL,
             inputs={"over_limit": True, "rationale_supplied": False},
             clause_refs=["4.1"],
@@ -146,7 +146,7 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
             "where a claim exceeds its category limit.",
         )
 
-    context = policy.context_for(CHECK_COST_RATIONALE)
+    context = policy.context_for(CHECK_COST_EXPLANATION)
 
     try:
         call = complete(
@@ -162,9 +162,9 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
                 rationale=rationale,
             ),
             max_tokens=600,
-            trace_name="check_7_cost_rationale",
+            trace_name="check_5_cost_explanation",
             trace_tags={
-                "check_id": CHECK_COST_RATIONALE,
+                "check_id": CHECK_COST_EXPLANATION,
                 "claim_id": claim.claim_id,
                 "run_id": run_id,
                 "policy_version": policy.version,
@@ -173,7 +173,7 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
     except ModelOutputError as exc:
         # The model answered but not readably. Inconclusive, not a guess.
         return CheckResult(
-            check_id=CHECK_COST_RATIONALE,
+            check_id=CHECK_COST_EXPLANATION,
             result=Result.INCONCLUSIVE,
             inputs={"over_limit": True, "rationale_supplied": True},
             detail=f"Model output could not be read: {exc}",
@@ -183,7 +183,7 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
     raw = str(parsed.get("result", "")).strip().lower()
     if raw not in VALID:
         return CheckResult(
-            check_id=CHECK_COST_RATIONALE,
+            check_id=CHECK_COST_EXPLANATION,
             result=Result.INCONCLUSIVE,
             inputs={"over_limit": True, "rationale_supplied": True},
             detail=f"Model returned an unrecognised result: {raw!r}",
@@ -193,7 +193,7 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
     clause_refs = [str(ground)] if ground else ["4.2"]
 
     return CheckResult(
-        check_id=CHECK_COST_RATIONALE,
+        check_id=CHECK_COST_EXPLANATION,
         result=Result(raw),
         inputs={
             "over_limit": True,

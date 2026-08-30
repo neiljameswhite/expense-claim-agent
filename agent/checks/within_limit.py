@@ -107,8 +107,75 @@ class Claim:
 VALID_BASES = {"per day", "per journey", "per night", "per head", "per claim"}
 
 
-def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
-    """Establish whether the claim exceeds its category limit."""
+MILEAGE = "mileage"
+SUBSISTENCE = "subsistence"
+
+
+def run(
+    claim: Claim,
+    policy: Policy,
+    *,
+    subsistence_limit: float | None = None,
+    run_id: str = "",
+) -> CheckResult:
+    """Establish whether the claim exceeds its category limit.
+
+    Two categories do not take the ordinary path.
+
+    Mileage has no per-claim limit under 6.7 — the amount follows from the
+    distance travelled, which nothing here can verify. Asking the model for
+    a limit would invite it to find £0.45 in the table and compare a whole
+    claim against a per-mile rate.
+
+    Subsistence has two limits, and which applies was established by check 5
+    from the claimant's description. It is passed in rather than re-derived,
+    so the two checks cannot reach different conclusions about the same
+    claim.
+    """
+    category = claim.claim_category.strip().lower()
+
+    if category == MILEAGE:
+        return CheckResult(
+            check_id=CHECK_WITHIN_LIMIT,
+            result=Result.NOT_APPLICABLE,
+            inputs={"category": claim.claim_category, "claim_amount": claim.claim_amount},
+            clause_refs=["6.7"],
+            detail="No per-claim limit applies to mileage.",
+        )
+
+    if category == SUBSISTENCE:
+        if subsistence_limit is None:
+            return CheckResult(
+                check_id=CHECK_WITHIN_LIMIT,
+                result=Result.NOT_APPLICABLE,
+                inputs={"category": claim.claim_category, "claim_amount": claim.claim_amount},
+                clause_refs=["5.1", "5.2"],
+                detail="Eligibility for subsistence was not established, so no "
+                "limit applies.",
+            )
+        from decimal import Decimal as _D
+
+        amount = _D(str(claim.claim_amount))
+        limit = _D(str(subsistence_limit))
+        within = amount <= limit
+        return CheckResult(
+            check_id=CHECK_WITHIN_LIMIT,
+            result=Result.PASS if within else Result.FAIL,
+            inputs={
+                "category": claim.claim_category,
+                "claim_amount": float(amount),
+                "limit": float(limit),
+                "basis": "per day",
+                "units": 1,
+                "allowance": float(limit),
+                "excess": float(amount - limit) if not within else 0.0,
+                "limit_source": "check 5",
+            },
+            clause_refs=["5.2"],
+            detail=f"Limit {limit} per day; claimed {amount}. "
+            + ("Within limit." if within else "Exceeds limit."),
+        )
+
     context = policy.context_for(CHECK_WITHIN_LIMIT)
 
     # The rationale can carry the attendee count for a per-head basis, so it
@@ -132,7 +199,7 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
                 extra=extra,
             ),
             max_tokens=600,
-            trace_name="check_6_within_limit",
+            trace_name="check_4_within_limit",
             trace_tags={
                 "check_id": CHECK_WITHIN_LIMIT,
                 "claim_id": claim.claim_id,

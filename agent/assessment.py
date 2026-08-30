@@ -1,11 +1,20 @@
 """
 Assessment — converts check findings into a verdict.
 
-This module is deliberately deterministic. Checks may involve model judgement;
-the decision about what those findings *mean* does not. The same set of check
+This module is deliberately deterministic. Checks may involve judgement; the
+decision about what those findings mean does not. The same set of check
 results always produces the same verdict.
 
-See solution design v0.4 section 6.
+Three verdicts, not two. `review` means the system could not reach a
+position on the evidence supplied — distinct from `decline`, which is a
+position. Collapsing the two would make a claim the model could not judge
+indistinguishable from one it judged and rejected, and would count correct
+restraint as a wrong answer.
+
+Six checks, all reasoning over what the claimant declared against what the
+policy says. Nothing here reads the receipt: extraction is stubbed, so a
+check comparing a claimed amount against an "extracted" total would be
+comparing one invented value against another and demonstrating nothing.
 """
 
 from __future__ import annotations
@@ -15,7 +24,7 @@ from enum import Enum
 
 
 class Result(str, Enum):
-    """The result vocabulary. See design v0.4 section 5.1."""
+    """The result vocabulary."""
 
     PASS = "pass"
     FAIL = "fail"
@@ -27,27 +36,24 @@ class Result(str, Enum):
 class Verdict(str, Enum):
     APPROVE = "approve"
     DECLINE = "decline"
+    REVIEW = "review"
 
 
-# Check identifiers. Numbers match the design document.
-CHECK_IS_RECEIPT = 1
-CHECK_LEGIBLE = 2
-CHECK_AMOUNT_MATCHES = 3
-CHECK_CATEGORY_CONSISTENT = 4
-CHECK_VAT = 5
-CHECK_WITHIN_LIMIT = 6
-CHECK_COST_RATIONALE = 7
-CHECK_OTHER_RATIONALE = 8
+# Check identifiers.
+CHECK_CATEGORY_CORRECT = 1
+CHECK_SUBSISTENCE_ELIGIBLE = 2
+CHECK_MILEAGE_JOURNEY = 3
+CHECK_WITHIN_LIMIT = 4
+CHECK_COST_EXPLANATION = 5
+CHECK_OTHER_DESCRIPTION = 6
 
 CHECK_NAMES = {
-    CHECK_IS_RECEIPT: "Document is a receipt",
-    CHECK_LEGIBLE: "Receipt legible",
-    CHECK_AMOUNT_MATCHES: "Amount matches receipt",
-    CHECK_CATEGORY_CONSISTENT: "Category consistent with receipt",
-    CHECK_VAT: "VAT declaration",
+    CHECK_CATEGORY_CORRECT: "Category correctly selected",
+    CHECK_SUBSISTENCE_ELIGIBLE: "Subsistence eligibility",
+    CHECK_MILEAGE_JOURNEY: "Mileage journey description",
     CHECK_WITHIN_LIMIT: "Within category limit",
-    CHECK_COST_RATIONALE: "Cost exception rationale",
-    CHECK_OTHER_RATIONALE: "Other category rationale",
+    CHECK_COST_EXPLANATION: "Cost exception explanation",
+    CHECK_OTHER_DESCRIPTION: "Other category description",
 }
 
 
@@ -75,7 +81,8 @@ class CheckResult:
 @dataclass
 class Assessment:
     verdict: Verdict
-    grounds: list[CheckResult]  # every check that contributed to a decline
+    grounds: list[CheckResult]       # checks that failed
+    undetermined: list[CheckResult]  # checks that could not be resolved
 
     @property
     def is_approved(self) -> bool:
@@ -85,31 +92,35 @@ class Assessment:
 class MissingCheckError(ValueError):
     """Raised when a required check has no recorded result.
 
-    Invariant 12: a check that did not run records not_applicable or
-    not_evaluated, never nothing at all. Silence is not a pass.
+    A check that did not run records not_applicable. Silence is not a pass.
     """
 
 
 REQUIRED_CHECKS = set(CHECK_NAMES)
 
+SETTLED = (Result.PASS, Result.NOT_APPLICABLE, Result.NOT_EVALUATED)
+
 
 def assess(check_results: list[CheckResult]) -> Assessment:
     """Produce a verdict from a complete set of check results.
 
-    Rules, in order of application:
+    Rules, in order:
 
       1. Every check must have a recorded result. A missing result is an
          error, not an implicit pass.
-      2. Check 6 (over limit) is excused where check 7 (cost rationale)
+      2. Check 4 (over limit) is excused where check 5 (cost explanation)
          passes — a valid exception supports the excess.
-      3. Any other fail declines.
-      4. Any inconclusive declines — the reviewer must look.
+      3. Any other fail declines. A definite ground to decline is
+         dispositive even where another check was inconclusive: the claim
+         can be decided, so it is.
+      4. Otherwise, any inconclusive result means the claim cannot be
+         determined on what was supplied. Verdict is review.
       5. Otherwise approve.
 
     Grounds accumulate: a claim may decline on several bases at once, and
     all of them are cited.
     """
-    by_id = {}
+    by_id: dict[int, CheckResult] = {}
     for cr in check_results:
         if cr.check_id in by_id:
             raise ValueError(f"Duplicate result for check {cr.check_id}")
@@ -121,33 +132,47 @@ def assess(check_results: list[CheckResult]) -> Assessment:
             "No result recorded for check(s): " + ", ".join(str(m) for m in sorted(missing))
         )
 
-    cost_rationale_upholds = by_id[CHECK_COST_RATIONALE].result is Result.PASS
+    explanation_upholds = by_id[CHECK_COST_EXPLANATION].result is Result.PASS
 
     grounds: list[CheckResult] = []
+    undetermined: list[CheckResult] = []
+
     for check_id in sorted(by_id):
         cr = by_id[check_id]
 
-        if cr.result in (Result.PASS, Result.NOT_APPLICABLE, Result.NOT_EVALUATED):
+        if cr.result in SETTLED:
             continue
 
-        # Rule 2: a valid cost exception excuses the limit breach itself.
-        if check_id == CHECK_WITHIN_LIMIT and cr.result is Result.FAIL and cost_rationale_upholds:
+        # Rule 2: a valid cost explanation excuses the limit breach itself,
+        # and nothing else.
+        if (
+            check_id == CHECK_WITHIN_LIMIT
+            and cr.result is Result.FAIL
+            and explanation_upholds
+        ):
             continue
 
-        grounds.append(cr)
+        if cr.result is Result.FAIL:
+            grounds.append(cr)
+        else:
+            undetermined.append(cr)
 
-    verdict = Verdict.DECLINE if grounds else Verdict.APPROVE
-    return Assessment(verdict=verdict, grounds=grounds)
+    if grounds:
+        verdict = Verdict.DECLINE
+    elif undetermined:
+        verdict = Verdict.REVIEW
+    else:
+        verdict = Verdict.APPROVE
+
+    return Assessment(verdict=verdict, grounds=grounds, undetermined=undetermined)
 
 
 def summarise(assessment: Assessment) -> str:
-    """Plain-language summary of the grounds. Not the reviewer-facing narrative,
-    which is generated separately with policy citations."""
-    if assessment.is_approved:
-        return "All checks satisfied."
+    """Plain-language summary. Not the reviewer-facing narrative, which is
+    assembled from the check details with their clause references."""
+    if assessment.verdict is Verdict.APPROVE:
+        return "All applicable checks satisfied."
 
-    parts = []
-    for cr in assessment.grounds:
-        verb = "could not be determined" if cr.result is Result.INCONCLUSIVE else "failed"
-        parts.append(f"{cr.name} {verb}")
+    parts = [f"{cr.name} failed" for cr in assessment.grounds]
+    parts += [f"{cr.name} could not be determined" for cr in assessment.undetermined]
     return "; ".join(parts) + "."

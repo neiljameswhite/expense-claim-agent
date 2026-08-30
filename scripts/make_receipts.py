@@ -27,8 +27,12 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent.db import corpus_path  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
-CORPUS = ROOT / "corpus" / "corpus_v1.json"
+CORPUS = corpus_path()
 OUT = ROOT / "ui" / "assets" / "receipts"
 
 INK = "#2B2B2B"
@@ -73,27 +77,33 @@ def font(kind: str, size: int):
 # --------------------------------------------------------------------------
 
 ADDRESSES = {
-    "Pret A Manger, Derby": ["Unit 4, Intu Centre", "Derby  DE1 2PL"],
+    "The Coach House, Derby": ["14 Sadler Gate", "Derby  DE1 3NQ"],
     "The Coach House, Bristol": ["14 Market Street", "Bristol  BS1 4QR"],
-    "Ryman, Nottingham": ["22 Clumber Street", "Nottingham  NG1 3GA"],
+    "Bella's Kitchen, Preston": ["9 Friargate", "Preston  PR1 2AT"],
+    "Station Grill, Bristol": ["Temple Meads, Concourse", "Bristol  BS1 6QF"],
+    "The Bull, Coventry": ["21 Spon Street", "Coventry  CV1 3BA"],
+    "Cafe Nero, Leeds": ["12 Briggate", "Leeds  LS1 6ER"],
+    "The Grand, Sheffield": ["1 Balm Green", "Sheffield  S1 2JA"],
+    "Trattoria, Nottingham": ["4 Bridlesmith Gate", "Nottingham  NG1 2GR"],
+    "Tesco Express, Warrington": ["Riverside Retail Park", "Warrington  WA2 7TT"],
+    "Angelica, Leeds": ["Trinity Leeds, 5th Floor", "Leeds  LS1 6HW"],
     "Station Cafe, Sheffield": ["Sheffield Station, Concourse", "Sheffield  S1 2BP"],
-    "LNER": ["Customer Services", "York  YO1 6JT"],
-    "Independent Stationers, Huddersfield": ["8 Byram Street", "Huddersfield  HD1 1DR"],
-    "Bella Italia, Manchester": ["The Printworks, Withy Grove", "Manchester  M4 2BS"],
-    "The Bridgewater, Warrington": ["3 Bridge Street", "Warrington  WA1 2AB"],
     "The Ivy, Leeds": ["58 Vicar Lane", "Leeds  LS1 7JH"],
     "Hyatt Regency, Birmingham": ["2 Bridge Street", "Birmingham  B1 2JZ"],
     "British Airways": ["Waterside, PO Box 365", "Harmondsworth  UB7 0GB"],
     "Apex Grassmarket, Edinburgh": ["31-35 Grassmarket", "Edinburgh  EH1 2HS"],
     "Lufthansa": ["Deutsche Lufthansa AG", "60546 Frankfurt am Main"],
+    "Premier Inn, Warrington": ["Centre Park", "Warrington  WA1 1QX"],
     "Institution of Engineering and Technology": ["Michael Faraday House", "Stevenage  SG1 2AY"],
     "Amazon UK": ["1 Principal Place, Worship Street", "London  EC2A 2FA"],
     "Wagamama, Warrington": ["Riverside Retail Park", "Warrington  WA2 7TT"],
-    "Nuclear Institute": ["CK Hui Centre, 5 Tower Court", "Cambridge  CB3 0AX"],
+    "Institute of Advanced Manufacturing": ["5 Tower Court", "Cambridge  CB3 0AX"],
     "Gaucho, Leeds": ["10 Bond Court", "Leeds  LS1 2JZ"],
     "Malmaison, Newcastle": ["104 Quayside", "Newcastle  NE1 3DX"],
-    "Angelica, Leeds": ["Trinity Leeds, 5th Floor", "Leeds  LS1 6HW"],
     "Voco St Davids, Cardiff": ["Havannah Street", "Cardiff  CF10 5SD"],
+    "Shell, Huddersfield": ["Leeds Road", "Huddersfield  HD2 1YU"],
+    "BP, Leeds": ["Kirkstall Road", "Leeds  LS4 2AZ"],
+    "Esso, Leeds": ["York Road", "Leeds  LS9 9AA"],
 }
 
 FOOTERS = [
@@ -259,6 +269,61 @@ def invoice(rec: dict, seed: int) -> Image.Image:
     return img
 
 
+def forecourt(rec: dict, seed: int) -> Image.Image:
+    """Petrol station receipt.
+
+    Distinct from a till roll because a fuel receipt evidences a purchase
+    rather than the claim: the amount on it has no relation to the mileage
+    being claimed, and the layout should make that obvious at a glance.
+    """
+    rng = random.Random(seed)
+    e = rec["extraction"]
+    items = e.get("line_items") or []
+
+    W, H = 400, 470
+    img = Image.new("RGB", (W, H), "#FDFDFB")
+    d = ImageDraw.Draw(img)
+
+    big, mid, small = font("mono_bold", 18), font("mono", 13), font("mono", 10)
+    y = 30
+
+    retailer = (e.get("retailer") or "").upper()
+    d.text((W // 2, y), retailer[:24], font=big, fill=INK, anchor="mt"); y += 28
+    for line in address_for(e.get("retailer") or ""):
+        if line:
+            d.text((W // 2, y), line, font=small, fill=FAINT, anchor="mt"); y += 15
+    y += 12
+    d.line([(28, y), (W - 28, y)], fill=RULE); y += 20
+
+    if e.get("date"):
+        parts = e["date"].split("-")
+        shown = f"{parts[2]}/{parts[1]}/{parts[0]}" if len(parts) == 3 else e["date"]
+        d.text((28, y), f"Date   {shown}", font=mid, fill=INK); y += 19
+    d.text((28, y), f"Time   {rng.randint(6,21):02d}:{rng.randint(0,59):02d}", font=mid, fill=INK); y += 19
+    d.text((28, y), f"Pump   {rng.randint(1,8)}", font=mid, fill=INK); y += 24
+
+    d.line([(28, y), (W - 28, y)], fill=RULE); y += 20
+
+    for item in items:
+        name = str(item.get("description", ""))[:24]
+        d.text((28, y), name, font=mid, fill=INK)
+        d.text((W - 28, y), f"{float(item.get('cost', 0)):.2f}", font=mid, fill=INK, anchor="rt")
+        y += 22
+
+    y += 10
+    d.line([(28, y), (W - 28, y)], fill="#8A8A8A", width=2); y += 18
+    d.text((28, y), "TOTAL", font=big, fill=INK)
+    d.text((W - 28, y), f"{float(e['total']):.2f}", font=big, fill=INK, anchor="rt"); y += 34
+
+    d.text((W // 2, y), f"CARD  ****{rng.randint(1000,9999)}", font=small, fill=FAINT, anchor="mt")
+    y += 16
+    d.text((W // 2, y), f"AUTH {rng.randint(100000,999999)}", font=small, fill=FAINT, anchor="mt")
+    y += 26
+    d.text((W // 2, y), "VAT receipt available on request", font=small, fill=FAINT, anchor="mt")
+
+    return img
+
+
 def boarding_pass(rec: dict, seed: int) -> Image.Image:
     """Not a receipt. Rendered for the record whose point is that it is not."""
     rng = random.Random(seed)
@@ -348,11 +413,12 @@ INVOICE_STYLE = {
     "Apex Grassmarket, Edinburgh",
     "Malmaison, Newcastle",
     "Voco St Davids, Cardiff",
+    "Premier Inn, Warrington",
+    "The Grand, Sheffield",
     "British Airways",
     "Lufthansa",
-    "LNER",
     "Institution of Engineering and Technology",
-    "Nuclear Institute",
+    "Institute of Advanced Manufacturing",
     "Amazon UK",
 }
 
@@ -386,6 +452,9 @@ def build(rec: dict) -> Image.Image:
         }
         return finish(degrade(thermal(stand_in, seed), seed))
 
+    if rec["claim"]["claim_category"] == "Mileage":
+        return finish(forecourt(rec, seed))
+
     style = invoice if retailer in INVOICE_STYLE else thermal
     return finish(style(rec, seed))
 
@@ -405,6 +474,7 @@ def main() -> None:
         kind = (
             "boarding pass" if e.get("is_receipt") is False
             else "degraded" if not e.get("retailer") or e.get("total") is None
+            else "forecourt" if rec["claim"]["claim_category"] == "Mileage"
             else "invoice" if e.get("retailer") in INVOICE_STYLE
             else "till roll"
         )

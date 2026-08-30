@@ -10,9 +10,10 @@ quietly retrieving the wrong text.
 import pytest
 
 from agent.assessment import (
-    CHECK_COST_RATIONALE,
-    CHECK_OTHER_RATIONALE,
-    CHECK_VAT,
+    CHECK_COST_EXPLANATION,
+    CHECK_MILEAGE_JOURNEY,
+    CHECK_OTHER_DESCRIPTION,
+    CHECK_SUBSISTENCE_ELIGIBLE,
     CHECK_WITHIN_LIMIT,
 )
 from agent.policy import (
@@ -27,23 +28,24 @@ from agent.policy import (
 
 GOOD = """
 # Expense Policy
-**Version 1.0**
+**Version 2.1**
 
 ## 1. Scope and principles
 
 **1.1** This policy applies to all employees.
 
-**1.3** All claims must be supported by a valid receipt. A valid receipt shows
-the retailer, the date, a description, the item costs and the total.
+**1.3** All claims must be supported by a valid receipt showing the retailer,
+the date, a description, the item costs and the total.
 
 ## 2. Categories and limits
 
 **2.1** Every claim must be assigned to a category.
 
-| Category | Limit |
-|---|---|
-| Subsistence | £40 |
-| Other | £50 |
+| Category | Limit | Basis |
+|---|---|---|
+| Subsistence | £40 or £15 | Per day |
+| Mileage | £0.45 | Per mile |
+| Other | £50 | Per claim |
 
 **2.3** Other must not be used to avoid a category limit.
 
@@ -53,29 +55,49 @@ the retailer, the date, a description, the item costs and the total.
 
 ## 4. Exceeding a category limit
 
-**4.1** A claim may exceed its limit only with a supported rationale.
+**4.1** A claim may exceed its limit only with a supported explanation.
 
-**4.2** A rationale is supported where the excess arose from one of:
+**4.2** An explanation is supported where the excess arose from one of:
 - (a) Prior written approval.
 - (b) Travel disruption.
 
-## 5. VAT
+## 5. Subsistence
 
-**5.2** VAT must be recorded for: Subsistence, Accommodation, Office supplies.
+**5.1** Subsistence may be claimed only where the employee was working away
+from their normal place of work.
 
-## 6. Claims that cannot be assessed
+**5.2** Two limits apply: £40 per day where the employee stayed away overnight;
+£15 per day where the employee travelled to a client site and back the same day
+and was away more than twelve hours.
 
-**6.1** Where the document is not a receipt the claim cannot be verified.
+## 6. Mileage
 
-## 7. Categories in detail
+**6.3** The fuel receipt must be dated no more than fourteen days before
+submission.
 
-**7.1 Subsistence.** Meals purchased while working away.
+**6.4** A mileage claim must state the client, its location, and the UK postcode
+of both origin and destination.
+
+**6.7** No per-claim limit applies to mileage.
+
+## 7. VAT
+
+**7.1** Where a receipt shows a VAT registration number and the expense is
+prepared food or drink consumed on the premises, the VAT amount must be recorded.
+
+## 8. Claims that cannot be assessed
+
+**8.1** Where the document is not a receipt the claim cannot be verified.
+
+## 9. Categories in detail
+
+**9.1 Subsistence.** Meals purchased while working away.
 """
 
 
 @pytest.fixture
 def policy():
-    p = parse(GOOD, version="1.0", source="test")
+    p = parse(GOOD, version="2.1", source="test")
     p.validate()
     return p
 
@@ -86,7 +108,7 @@ def policy():
 
 
 def test_sections_are_found(policy):
-    assert set(policy.sections) == {"1", "2", "3", "4", "5", "6", "7"}
+    assert set(policy.sections) == {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
 
 
 def test_section_headings(policy):
@@ -120,7 +142,7 @@ def test_unknown_clause_raises(policy):
 def test_version_parsed_from_document():
     from agent.policy import _VERSION_RE
 
-    assert _VERSION_RE.search(GOOD).group(1) == "1.0"
+    assert _VERSION_RE.search(GOOD).group(1) == "2.1"
 
 
 # --------------------------------------------------------------------------
@@ -129,13 +151,13 @@ def test_version_parsed_from_document():
 
 
 def test_cost_rationale_check_sees_section_four(policy):
-    ctx = policy.context_for(CHECK_COST_RATIONALE)
+    ctx = policy.context_for(CHECK_COST_EXPLANATION)
     assert "Prior written approval" in ctx
 
 
-def test_cost_rationale_check_does_not_see_vat_rules(policy):
+def test_cost_explanation_check_does_not_see_vat_rules(policy):
     """The point of per-check retrieval: narrow context, less to sift."""
-    ctx = policy.context_for(CHECK_COST_RATIONALE)
+    ctx = policy.context_for(CHECK_COST_EXPLANATION)
     assert "VAT" not in ctx
 
 
@@ -145,15 +167,20 @@ def test_limit_check_sees_the_limits_table(policy):
     assert "Subsistence" in ctx
 
 
-def test_vat_check_sees_only_vat(policy):
-    ctx = policy.context_for(CHECK_VAT)
-    assert "Office supplies" in ctx
-    assert "Travel disruption" not in ctx
+def test_subsistence_check_sees_both_limits(policy):
+    ctx = policy.context_for(CHECK_SUBSISTENCE_ELIGIBLE)
+    assert "£40" in ctx and "£15" in ctx
+
+
+def test_mileage_check_sees_the_journey_elements(policy):
+    ctx = policy.context_for(CHECK_MILEAGE_JOURNEY)
+    assert "postcode" in ctx
+    assert "consumed on the premises" not in ctx
 
 
 def test_other_rationale_check_sees_the_anti_avoidance_clause(policy):
     """2.3 matters here — Other must not be used to dodge a limit."""
-    ctx = policy.context_for(CHECK_OTHER_RATIONALE)
+    ctx = policy.context_for(CHECK_OTHER_DESCRIPTION)
     assert "avoid a category limit" in ctx
 
 
@@ -189,11 +216,11 @@ def test_renumbered_anchor_clause_fails_at_load():
     assert "4.2" in str(exc.value)
 
 
-def test_missing_vat_anchor_fails_at_load():
-    broken = GOOD.replace("**5.2**", "**5.7**")
+def test_missing_mileage_anchor_fails_at_load():
+    broken = GOOD.replace("**6.4**", "**6.9**")
     with pytest.raises(PolicyStructureError) as exc:
         parse(broken).validate()
-    assert "5.2" in str(exc.value)
+    assert "6.4" in str(exc.value)
 
 
 def test_emptied_section_fails_at_load():
@@ -206,11 +233,11 @@ def test_emptied_section_fails_at_load():
 def test_all_problems_reported_together():
     """A stale mapping usually breaks in several places at once. Report them
     all rather than one per run."""
-    broken = GOOD.replace("**4.2**", "**4.3**").replace("**5.2**", "**5.7**")
+    broken = GOOD.replace("**4.2**", "**4.3**").replace("**6.4**", "**6.9**")
     with pytest.raises(PolicyStructureError) as exc:
         parse(broken).validate()
     message = str(exc.value)
-    assert "4.2" in message and "5.2" in message
+    assert "4.2" in message and "6.4" in message
 
 
 def test_valid_policy_passes_validation(policy):
