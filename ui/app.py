@@ -1043,10 +1043,14 @@ def tab_completed() -> None:
 
 def tab_about() -> None:
     st.markdown("""
-A learning experiment in building an agentic AI workflow system.
+#### Objective 
 
-The objective was to build a working prototype and focus on testing and
-recording information on AI decisions relative to human review outcome.
+Create a sandbox environment where prototype agentic AI workflows can be 
+designed, developed & tested to build knowledge and test feasibility.
+
+Start by building a working prototype and focus on how an 
+agentic AI workflow could be tested, monitored and integrated with Human In the Loop reviews and
+external LLM API calls.   
 
 #### What it is
 
@@ -1075,8 +1079,7 @@ The following checks are performed:
 #### How it works
 
 1. Select a claim on the 'Test Claims' tab and submit it
-2. On the 'Review Queue' tab you see the receipt, extracted values, checks
-   performed and the verbatim clauses cited, then Approve or Decline
+2. On the 'Review Queue' tab the submitted claim is held for human review.
 3. Disagreeing with the AI verdict requires a reason to overturn
 4. All completed claims are recorded on the Completed tab, with the rate of
    overturned decisions
