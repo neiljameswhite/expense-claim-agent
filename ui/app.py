@@ -88,6 +88,19 @@ st.markdown(
           color: #9AA5B1 !important;
           border: 1px solid #D8DEE6 !important;
       }
+      .checks-table table {
+          table-layout: fixed;
+          width: 100%;
+      }
+      .checks-table th:nth-child(1),
+      .checks-table td:nth-child(1) { width: 4%; }
+      .checks-table th:nth-child(2),
+      .checks-table td:nth-child(2) { width: 16%; }
+      .checks-table th:nth-child(3),
+      .checks-table td:nth-child(3) { width: 50%; }
+      .checks-table th:nth-child(4),
+      .checks-table td:nth-child(4) { width: 30%; }
+      .checks-table td { vertical-align: top; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1030,37 +1043,41 @@ def tab_completed() -> None:
 
 def tab_about() -> None:
     st.markdown("""
-A learning experiment in building an agentic decision-making system in a form
-that could plausibly be deployed in an enterprise.
+A learning experiment in building an agentic AI workflow system.
 
 The objective was to build a working prototype and focus on testing and
 recording information on AI decisions relative to human review outcome.
 
-#### What it does
+#### What it is
 
-Performs an AI review of a pre-populated mock expense claim against an Expense
-Policy and presents a queue item to a human reviewer.
+A prototype of an enterprise expense claim system where expense claims are
+reviewed by an AI agent against a supplied expense policy. The submitted claims
+are then populated in a work queue for human review.
 
-Six checks run against each claim. No limits, categories or conditions are
-hardcoded: every threshold is read from the policy document at assessment
-time, so amending the policy changes the system's behaviour without any change
-to the code. Judgement is performed by the model; the verdict is computed in
-code from its findings, so the same findings always produce the same outcome.
+A set of pre-populated mock expense claims have been created to act as tests of
+the system with a pre-defined expected result.
 
-#### What it does not do
+The following checks are performed:
 
-The receipt is shown to the reviewer but is not read by the system. Claim data
-is supplied rather than extracted, so there are no checks comparing a claimed
-amount against one taken from the image. Reading the receipt — and marking on
-it where each value was found — is the obvious next layer, and the extraction
-step exists in the code as the seam it would sit behind.
+<div class="checks-table">
+
+| # | Check | Check performed | Inputs to the LLM query |
+|---|---|---|---|
+| 1 | Category correctly selected | Runs on every claim. LLM query to judge whether the category selected is the one the policy requires for the business purpose provided, including whether "Other" is being used to avoid a limit. | Policy sections relevant to expense categories.<br>Claim fields:<br>· Category<br>· Business purpose<br>· Other rationale, where given |
+| 2 | Subsistence eligibility | Subsistence claims only. LLM query to judge whether the business purpose establishes a circumstance the policy permits — an overnight stay, or a same-day client visit of more than twelve hours — and to report which of the two limits applies. | Policy sections relevant to subsistence.<br>Claim fields:<br>· Business purpose |
+| 3 | Mileage journey description | Mileage claims only. LLM query to verify the business purpose contains every element the policy requires: the nature of the journey, the client name, and UK postcodes for both the starting point and the destination. | Policy sections relevant to mileage.<br>Claim fields:<br>· Business purpose |
+| 4 | Within category limit | All claims except mileage, which has no per-claim limit, and subsistence claims that failed check 2, since a claim that is not payable has no limit to test against. LLM query to establish, from the category and business purpose, what the scenario is and therefore what limit the policy sets for it, on what basis, and how many units the claim covers. The amount claimed is not included in the query, so the model cannot perform the comparison; that is then made in code. | Policy sections relevant to categories, limits, subsistence and mileage.<br>Claim fields:<br>· Category<br>· Business purpose<br>· Cost exception rationale, where given |
+| 5 | Cost exception rationale | Only where check 4 found the claim over its limit. LLM query to judge whether the explanation provided establishes a ground the policy accepts for exceeding a limit. | Policy sections relevant to exceeding a limit.<br>Claim fields:<br>· Business purpose<br>· Cost exception rationale |
+| 6 | Other category description | Only where "Other" was selected as the category. LLM query to judge whether the rationale provided gives sufficient justification under the policy's definition of "Other". | Policy sections relevant to the "Other" category.<br>Claim fields:<br>· Business purpose<br>· Other category rationale |
+
+</div>
 
 #### How it works
 
-1. Select a claim on the Test Claims tab and submit it
-2. On the Review Queue tab you see the receipt, extracted values, checks performed
-   and the verbatim clauses cited, then approve or decline
-3. Disagreeing with the AI requires a reason to overturn
+1. Select a claim on the 'Test Claims' tab and submit it
+2. On the 'Review Queue' tab you see the receipt, extracted values, checks
+   performed and the verbatim clauses cited, then Approve or Decline
+3. Disagreeing with the AI verdict requires a reason to overturn
 4. All completed claims are recorded on the Completed tab, with the rate of
    overturned decisions
 
@@ -1073,7 +1090,8 @@ step exists in the code as the seam it would sit behind.
    behind a real interface
 5. Policy version, model version and run label recorded on every run so
    results stay comparable
-""")
+
+""", unsafe_allow_html=True)
 
 
 def tab_policy() -> None:

@@ -74,10 +74,6 @@ USER = """POLICY SECTION (version {policy_version})
 
 CLAIM
 
-Category: {category}
-Amount claimed: {currency} {amount}
-Applicable limit: as stated in the policy section above
-Date incurred: {claim_date}
 Business purpose: {business_purpose}
 
 Rationale given for exceeding the limit:
@@ -154,10 +150,6 @@ def run(claim: Claim, policy: Policy, *, over_limit: bool, run_id: str = "") -> 
             user=USER.format(
                 policy_version=policy.version,
                 policy_context=context,
-                category=claim.claim_category,
-                currency=claim.claim_currency,
-                amount=f"{claim.claim_amount:.2f}",
-                claim_date=claim.claim_date,
                 business_purpose=claim.business_purpose,
                 rationale=rationale,
             ),

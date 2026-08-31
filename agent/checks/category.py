@@ -63,8 +63,6 @@ USER = """POLICY SECTIONS (version {policy_version})
 CLAIM
 
 Category selected by the claimant: {category}
-Amount: {currency} {amount}
-Date incurred: {claim_date}
 Business purpose: {business_purpose}
 {other_rationale}
 
@@ -109,9 +107,6 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
                 policy_version=policy.version,
                 policy_context=policy.context_for(CHECK_CATEGORY_CORRECT),
                 category=claim.claim_category,
-                currency=claim.claim_currency,
-                amount=f"{claim.claim_amount:.2f}",
-                claim_date=claim.claim_date,
                 business_purpose=claim.business_purpose,
                 other_rationale=other,
             ),

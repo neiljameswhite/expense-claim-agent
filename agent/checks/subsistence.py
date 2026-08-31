@@ -64,10 +64,6 @@ USER = """POLICY SECTIONS (version {policy_version})
 
 CLAIM
 
-Category: {category}
-Amount claimed: {currency} {amount}
-Date incurred: {claim_date}
-
 Description given by the claimant:
 \"\"\"
 {description}
@@ -128,10 +124,6 @@ def run(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
             user=USER.format(
                 policy_version=policy.version,
                 policy_context=policy.context_for(CHECK_SUBSISTENCE_ELIGIBLE),
-                category=claim.claim_category,
-                currency=claim.claim_currency,
-                amount=f"{claim.claim_amount:.2f}",
-                claim_date=claim.claim_date,
                 description=description,
             ),
             max_tokens=600,
