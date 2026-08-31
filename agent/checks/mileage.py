@@ -66,9 +66,6 @@ USER = """POLICY SECTION (version {policy_version})
 
 CLAIM
 
-Amount claimed: {currency} {amount}
-Date incurred: {claim_date}
-
 Journey description given by the claimant:
 \"\"\"
 {description}
@@ -134,9 +131,6 @@ def journey(claim: Claim, policy: Policy, *, run_id: str = "") -> CheckResult:
             user=USER.format(
                 policy_version=policy.version,
                 policy_context=policy.context_for(CHECK_MILEAGE_JOURNEY),
-                currency=claim.claim_currency,
-                amount=f"{claim.claim_amount:.2f}",
-                claim_date=claim.claim_date,
                 description=description,
             ),
             max_tokens=600,
