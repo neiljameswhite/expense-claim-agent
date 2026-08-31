@@ -65,13 +65,15 @@ st.markdown(
       div[data-testid="stTextArea"] textarea {
           border-color: #C3CEDC !important;
       }
-      button[kind="primary"] {
+      button[kind="primary"],
+      button[kind="primaryFormSubmit"] {
           background-color: #E8F0FA !important;
           color: #143F73 !important;
           border: 1px solid #1F5FA8 !important;
           font-weight: 600 !important;
       }
-      button[kind="primary"]:hover:enabled {
+      button[kind="primary"]:hover:enabled,
+      button[kind="primaryFormSubmit"]:hover:enabled {
           background-color: #1F5FA8 !important;
           color: #FFFFFF !important;
       }
@@ -80,7 +82,8 @@ st.markdown(
          shortcut does not reliably work, and the decision should be recorded
          by pressing the button rather than by a hidden key combination. */
       div[data-testid="InputInstructions"] { display: none !important; }
-      button[kind="primary"]:disabled {
+      button[kind="primary"]:disabled,
+      button[kind="primaryFormSubmit"]:disabled {
           background-color: #F2F4F6 !important;
           color: #9AA5B1 !important;
           border: 1px solid #D8DEE6 !important;
@@ -230,8 +233,15 @@ def run_processing(only: list[str] | None = None) -> list:
     """
     policy = policy_object()
     lines: list[str] = []
-    console = st.empty()
-    bar = st.progress(0.0, text="Starting…")
+
+    # st.status pins a labelled block that stays put and reports its own
+    # state. The previous arrangement rendered the log at the foot of the
+    # page, where a reviewer could be scrolled past it and not know anything
+    # was happening.
+    status = st.status("Assessing claims…", expanded=True)
+    with status:
+        console = st.empty()
+        bar = st.progress(0.0, text="Starting…")
 
     def draw() -> None:
         console.code("\n".join(lines[-400:]), language="text")
@@ -293,6 +303,7 @@ def run_processing(only: list[str] | None = None) -> list:
         lines.append(f"{len(results)} claim(s) · {tokens:,} tokens total")
         draw()
 
+    status.update(label=f"Assessed {len(results)} claim(s)", state="complete")
     return results
 
 
@@ -604,15 +615,26 @@ def render_submission_form(claim: dict, record_id: str | None, *, key_prefix: st
 def tab_submit() -> None:
     st.subheader("Test Claims")
 
+    # Two views, not one. Streamlit cannot disable a control that is already
+    # painted in the browser: while a run is in progress the server processes
+    # nothing, so a disabled= flag never reaches the page and clicks queue up
+    # instead. Rendering a different view is the one thing it can do — during
+    # a run the corpus list is not on the page at all, so there is nothing to
+    # click and the console is the only thing in view.
+    if st.session_state.get("run_request"):
+        _render_processing_view()
+    else:
+        _render_selection_view()
+
+
+def _render_selection_view() -> None:
     records = load_corpus()
-    counts = submitted_counts()
     awaiting = pending_record_ids()
 
     # Checkbox keys carry a nonce. Deleting a widget's key does not reliably
     # reset it — Streamlit restores the value from the incoming frontend
     # state when the widget is recreated in the same run. Bumping the nonce
-    # sidesteps that: the checkboxes become new widgets with no history, so
-    # they take their default of unchecked.
+    # sidesteps that: the checkboxes become new widgets with no history.
     nonce = st.session_state.get("pick_nonce", 0)
 
     def pick_key(record_id: str) -> str:
@@ -631,10 +653,16 @@ def tab_submit() -> None:
     # A form batches the checkboxes so nothing re-runs until Submit is
     # pressed. Without it every tick re-runs the script, which resets the
     # tabs and throws you back to About.
-    #
-    # The cost is that the button cannot show a running count of what is
-    # selected, because nothing updates until submission.
     with st.form(key=f"submit_{nonce}"):
+        # Submit sits above the list. With thirty records the button was a
+        # long scroll away, and the run then rendered below the fold where a
+        # reviewer could miss it entirely.
+        submitted = st.form_submit_button("Submit", type="primary")
+        # Reserved for the validation message, so it appears beside the
+        # button rather than a page below it.
+        error_slot = st.empty()
+        st.divider()
+
         for rec in records:
             claim = rec["claim"]
             rid = rec["record_id"]
@@ -654,47 +682,115 @@ def tab_submit() -> None:
                 with st.expander(header):
                     render_submission_form(claim, rid)
 
-        st.divider()
-        submitted = st.form_submit_button("Submit", type="primary")
-
     if submitted:
         chosen = [
             r["record_id"] for r in records
             if st.session_state.get(pick_key(r["record_id"]))
         ]
         if not chosen:
-            st.error("Select at least one claim.")
+            error_slot.error("Select at least one claim.")
         else:
-            # A record already awaiting assessment is not submitted again.
-            # Doing so would leave two claims for one test case, and
-            # processing would take both.
-            already = pending_record_ids()
-            fresh = [r for r in records
-                     if r["record_id"] in chosen and r["record_id"] not in already]
-            waiting = [r for r in records
-                       if r["record_id"] in chosen and r["record_id"] in already]
-
-            if waiting:
-                st.info(
-                    f"{len(waiting)} already awaiting assessment "
-                    f"({', '.join(r['record_id'] for r in waiting)}) — assessing "
-                    "rather than submitting again."
-                )
-            if fresh:
-                n = submit_claims(fresh)
-                st.caption(f"{n} claim(s) written. Assessing…")
-
-            results = run_processing(only=chosen)
-            report_processing(results)
-            st.session_state["pick_nonce"] = nonce + 1
+            # Record what to run and re-render. The work happens on the next
+            # pass, in the processing view, so the corpus list is gone from
+            # the page before the first model call is made.
+            st.session_state["run_request"] = chosen
             st.rerun()
 
-    st.divider()
 
+def _pin_page(page: str) -> None:
+    """Request a page for the next run.
+
+    Written to its own key, not the radio's. By the time a page function
+    runs, main() has already created the widget with key "page", and
+    Streamlit discards writes to an instantiated widget's state. main()
+    applies this at the top of the next run, before the radio exists.
+    """
+    st.session_state["_pinned_page"] = page
+
+
+def _go_to(page: str) -> None:
+    """Set the active page.
+
+    Used as an on_click callback rather than assigned inside a button's if
+    block. main() renders the sidebar radio before it calls the page
+    function, so by the time that block runs the widget with key "page"
+    already exists in the same script run — and Streamlit discards writes to
+    an instantiated widget's state. A callback runs before the next run
+    begins, when no widget has been created yet.
+    """
+    st.session_state["page"] = page
+
+
+def _render_processing_view() -> None:
+    chosen = st.session_state.get("run_request") or []
+    records = load_corpus()
+    nonce = st.session_state.get("pick_nonce", 0)
+
+    st.caption(f"Assessing {len(chosen)} claim(s).")
+
+    # A record already awaiting assessment is not submitted again. Doing so
+    # would leave two claims for one test case, and processing would take
+    # both.
+    already = pending_record_ids()
+    fresh = [r for r in records if r["record_id"] in chosen and r["record_id"] not in already]
+    waiting = [r for r in records if r["record_id"] in chosen and r["record_id"] in already]
+
+    if waiting:
+        st.info(
+            f"{len(waiting)} already awaiting assessment "
+            f"({', '.join(r['record_id'] for r in waiting)}) — assessing rather "
+            "than submitting again."
+        )
+
+    try:
+        if fresh:
+            # Written, not announced. "N claim(s) written" described a
+            # database insert, which is not something a reviewer needs to
+            # know about — the console below reports the assessment, which is
+            # what they are waiting for.
+            submit_claims(fresh)
+        results = run_processing(only=chosen)
+        report_processing(results)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"The run failed: {exc}")
+        results = []
+    finally:
+        # Cleared whatever happened: a run that raises must not leave the tab
+        # stuck on a processing view with no way back.
+        st.session_state["run_request"] = None
+        st.session_state["pick_nonce"] = nonce + 1
+
+    st.divider()
+    st.button(
+        "Back to Test Claims",
+        type="primary",
+        key="back_to_claims",
+        on_click=_go_to,
+        args=("Test Claims",),
+    )
 
 
 def tab_review() -> None:
     st.subheader("Review Queue")
+
+    if st.session_state.get("assess_pending"):
+        st.caption("Assessing pending claims.")
+        try:
+            results = run_processing()
+            report_processing(results)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"The run failed: {exc}")
+        finally:
+            st.session_state["assess_pending"] = False
+        st.divider()
+        st.button(
+            "Back to the Queue",
+            type="primary",
+            key="back_to_queue",
+            on_click=_go_to,
+            args=("Review Queue",),
+        )
+        return
 
     # Anything written but not yet assessed — a failed run returned to
     # pending, or claims seeded from the command line.
@@ -705,8 +801,11 @@ def tab_review() -> None:
             st.warning(f"{waiting} claim(s) submitted but not yet assessed.")
         with right:
             if st.button("Assess now", type="primary"):
-                results = run_processing()
-                report_processing(results)
+                # Same reasoning as the Test Claims tab: record the request
+                # and re-render, so the queue is off the page before the run
+                # starts rather than sitting there looking clickable.
+                st.session_state["assess_pending"] = True
+                st.rerun()
 
     order = st.selectbox(
         "Order by",
@@ -770,9 +869,14 @@ def tab_review() -> None:
             with st.form(key=f"decide_{run_id}"):
                 # Both are required. A form cannot flag them as you type, so
                 # the label says so and the button reports what is missing.
+                # Deliberately not remembered between claims. Carrying the
+                # name forward made it look as though it had been applied to
+                # every open claim, and it removed a small friction worth
+                # keeping: entering it each time makes each decision a
+                # separate act rather than a default, and stops a reviewer
+                # working through the queue without pausing.
                 reviewer = st.text_input(
                     "Reviewer *",
-                    value=st.session_state.get("reviewer", ""),
                     placeholder="Required",
                 )
 
@@ -817,10 +921,19 @@ def tab_review() -> None:
                         "is required."
                     )
                 else:
-                    st.session_state["reviewer"] = reviewer.strip()
                     record_decision(
                         run_id, choice, rationale.strip(), reviewer.strip(), response
                     )
+                    # Rerun so the decided claim leaves the queue immediately.
+                    # The page is pinned first: main() renders the sidebar
+                    # radio before the page function, so a rerun from here
+                    # would otherwise reset the selection to About.
+                    #
+                    # _pin_page writes to a separate key rather than the
+                    # radio's own, because the widget already exists in this
+                    # run and Streamlit discards writes to an instantiated
+                    # widget's state.
+                    _pin_page("Review Queue")
                     st.success(f"{row['claim_id']} recorded as {choice}.")
                     st.rerun()
 
@@ -1021,6 +1134,12 @@ def main() -> None:
     def label(name: str) -> str:
         n = counts.get(name)
         return f"{name} ({n})" if n is not None else name
+
+    # Applied before the radio is created, which is the only point at which
+    # its state can be set.
+    pinned = st.session_state.pop("_pinned_page", None)
+    if pinned:
+        st.session_state["page"] = pinned
 
     with st.sidebar:
         st.markdown("### Navigation")
