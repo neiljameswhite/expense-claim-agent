@@ -104,6 +104,14 @@ def seed(only: list[str] | None = None) -> int:
         for rec in records:
             claim = rec["claim"]
             extraction = dict(rec["extraction"])
+
+            # Record ids are already EXP-n, so no prefix is added. An earlier
+            # version prefixed "EXP-" unconditionally, which produced
+            # EXP-EXP-3 once the ids became sequential.
+            claim_id = claim_id_for(conn, rec["record_id"])
+            if claim_id != rec["record_id"]:
+                generations.append(claim_id)
+
             conn.execute(
                 INSERT,
                 {
