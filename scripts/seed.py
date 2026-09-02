@@ -51,25 +51,30 @@ def load_corpus() -> dict:
     return json.loads(CORPUS.read_text(encoding="utf-8"))
 
 
-def next_generation(conn, record_ids: list[str]) -> str:
-    """Suffix for this batch, so re-seeding without a reset does not collide.
+def claim_id_for(conn, record_id: str) -> str:
+    """A unique claim id for this submission of a record.
 
-    First load of a record gives claim_id 'EXP-H1'; a second gives
-    'EXP-H1-2'. The plain id is the common case and stays readable.
+    First submission uses the record id unchanged — EXP-3. A second gives
+    EXP-3-2, a third EXP-3-3, and so on, so a record can be resubmitted to
+    compare runs without colliding.
+
+    Derived per record rather than per batch. The previous version counted
+    rows across the whole batch and divided, which produced the wrong
+    generation whenever records had been submitted different numbers of
+    times.
     """
-    row = conn.execute(
-        "SELECT count(*) AS n FROM claims WHERE record_id = ANY(%s)", (record_ids,)
-    ).fetchone()
-    if row["n"] == 0:
-        return ""
-    row = conn.execute(
-        """
-        SELECT count(DISTINCT claim_id) AS n
-        FROM claims WHERE record_id = ANY(%s)
-        """,
-        (record_ids,),
-    ).fetchone()
-    return f"-{(row['n'] // max(len(record_ids), 1)) + 2}"
+    rows = conn.execute(
+        "SELECT claim_id FROM claims WHERE record_id = %s", (record_id,)
+    ).fetchall()
+    existing = {r["claim_id"] for r in rows}
+
+    if record_id not in existing:
+        return record_id
+
+    n = 2
+    while f"{record_id}-{n}" in existing:
+        n += 1
+    return f"{record_id}-{n}"
 
 
 def seed(only: list[str] | None = None) -> int:
@@ -95,14 +100,14 @@ def seed(only: list[str] | None = None) -> int:
     today = date.today()
 
     with connect() as conn:
-        suffix = next_generation(conn, [r["record_id"] for r in records])
+        generations = []
         for rec in records:
             claim = rec["claim"]
             extraction = dict(rec["extraction"])
             conn.execute(
                 INSERT,
                 {
-                    "claim_id": f"EXP-{rec['record_id']}{suffix}",
+                    "claim_id": claim_id,
                     "record_id": rec["record_id"],
                     "submitter": claim["submitter"],
                     "claim_amount": claim["claim_amount"],
@@ -118,8 +123,8 @@ def seed(only: list[str] | None = None) -> int:
                 },
             )
 
-    if suffix:
-        print(f"Seeded {len(records)} claims (generation {suffix.lstrip('-')}).")
+    if generations:
+        print(f"Seeded {len(records)} claims ({len(generations)} as repeat submissions).")
     else:
         print(f"Seeded {len(records)} claims.")
     return len(records)
